@@ -1,6 +1,8 @@
 # PhD_Projects_Code
 All code from PhD 2013-2017
 
+I have merged all my previous repositories in this folder to contain my PhD files.
+
 Each folder contains a different project and subsequent publication (with the exception of side projects and general functions and code)
 
 **Placental-Telomere-Length-Project**
