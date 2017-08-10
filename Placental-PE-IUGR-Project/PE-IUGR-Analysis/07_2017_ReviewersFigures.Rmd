@@ -1,0 +1,1347 @@
+---
+title: "ReviewComments_Plots"
+author: "SLW"
+date: "July 21, 2017"
+output: 
+  html_document: 
+    keep_md: yes
+---
+
+Load Packages
+```{r LOAD PACKAGES, include=FALSE,results='hide'}
+#source("https://bioconductor.org/biocLite.R")
+#biocLite('mgcv')
+  library(rlang)
+  library(mgcv)
+  library(Rcpp)
+  library(methylumi)
+  library(lumi)
+  library(minfi)
+  library(gplots)
+  library(reshape2)
+  library(reshape)
+  library(ggplot2)
+  library(RColorBrewer)
+  library(gridExtra)
+  library(grid)
+  library(MASS)
+  library(limma)
+  library(dendextend)
+  library(impute)
+  library(pvclust)
+  library(ape)
+  library(rtracklayer)
+  library("GenomicFeatures")
+  library(VennDiagram)
+  library(devtools)
+  library(plyr)
+  library(dplyr)
+  library(WGCNA)
+#devtools::install_github("pkimes/sigclust2")
+  library(sigclust2)
+  library(purrr)
+  library(ggjoy)
+```
+
+```{r Load Cox Data}
+memory.limit(10000000000000)
+setwd('Z:/ROBLAB1 coredata-databases/1 Samantha DATA Folder/PROJECTS/DNAmProfiling_PE_IUGR_2017')
+
+##Read in phenotype data
+Cox_des<-read.csv('CoX_Samples_2017.csv',header=T)
+for (i in 1:nrow(Cox_des)){
+  Cox_des$Row[i]<-paste(substr( Cox_des[i,"Sentrix_Position"], start=1, stop=3))
+}
+ Cox_des$Row<- as.factor(Cox_des$Row)
+str(Cox_des)
+ Cox_des$Sentrix_ID<-as.factor( Cox_des$Sentrix_ID)
+ Cox_des$GA<-as.numeric( Cox_des$GA)
+ Cox_des$BW<-as.numeric( Cox_des$BW)
+
+##As IUGR is not fully represented in all 6 row positions, I group rows into levels 1,2,and 3 on the microarray
+ Cox_des$row_grouped<-revalue(Cox_des$Row,c("R01"="1","R02"="1","R03"="2","R04"="2","R05"="3",
+                                   "R06"="3"))
+ Cox_des$row_grouped<-as.numeric(Cox_des$row_grouped)
+rownames(Cox_des)<- Cox_des$ParticipantID
+
+##Loading in DNAm Data- DNAm measured on the Illumina 450K array
+load('CoxCohort.fnorm_Jan2016.RData')
+Cox_Data<-exprs(PROJECT.fun)
+Cox_Data<-as.data.frame(Cox_Data)
+dim(Cox_Data)
+
+#colnames(Cox_Data)
+##typo error was made-need to change CPX to COX 
+Cox_Data$COX_9801<-Cox_Data$CPX_9801
+Cox_Data$CPX_9801<-NULL
+Cox_Data$COX_11387<-Cox_Data$COX_11378
+Cox_Data$COX_11378<-NULL
+Cox_Data<-as.matrix(Cox_Data)
+
+all(colnames(Cox_Data)==rownames(Cox_des))##FALSE
+Cox_Data<-Cox_Data[,order(colnames(Cox_Data))]
+Cox_des<-Cox_des[order(Cox_des$ParticipantID),]
+all(colnames(Cox_Data)==rownames(Cox_des))##TRUE
+```
+
+```{r LOAD ROBLAB DATA}
+load('PROJECT.fnorm_Jan2016.RData')
+Roblab_Data<-exprs(PROJECT.fun)
+dim(Roblab_Data)##102 samples
+
+Roblab_des<-read.csv('Design_matrix_WPR_2016_ConSplit.csv', header=T)
+rownames(Roblab_des)<-Roblab_des$ParticipantID
+dim(Roblab_des)##102 samples
+
+all(colnames(Roblab_Data)==rownames(Roblab_des))##FALSE
+Roblab_Data<-Roblab_Data[,rownames(Roblab_des)]
+all(colnames(Roblab_Data)==rownames(Roblab_des))##TRUE
+
+##removing replicate samples
+rm<-c("PL21","PL21r","PL64","PL64r1","PM139","PM139r1","PM72","PM72r")
+Roblab_Data<-Roblab_Data[,-which(colnames(Roblab_Data) %in% rm)]
+dim(Roblab_Data)
+
+Roblab_des<-Roblab_des[-which(rownames(Roblab_des) %in% rm),]
+dim(Roblab_des)
+Roblab_des$group<-droplevels(Roblab_des$group)
+#str(Roblab_des)
+
+##Double check that the columns of the data match the rows of the phenotype data
+all(colnames(Roblab_Data)==rownames(Roblab_des))##TRUE
+
+##Inputting sample position on the chip into the phenotype data
+for (i in 1:nrow(Roblab_des)){
+  Roblab_des$Row[i]<-paste(substr(Roblab_des[i,"Sentrix_Position"], start=1, stop=3))
+}
+Roblab_des$Row<- as.factor(Roblab_des$Row)
+#str(Roblab_des)
+
+##Row grouped- as IUGR is not fully represented in all 6 row positions
+Roblab_des$row_grouped<-revalue(Roblab_des$Row,c("R01"="1","R02"="1","R03"="2","R04"="2","R05"="3",
+                                   "R06"="3"))
+Roblab_des$row_grouped<-as.numeric(Roblab_des$row_grouped)
+```
+
+```{r PCA plots on both cohorts validated hits, fig.height=18,fig.width=18}
+
+validatedhits<-read.table('Cox_Roblab_PersistentHits_Betas_Pval_GeneName_2017.txt')
+  
+##Subset data
+Roblab_Data599<-Roblab_Data[which(rownames(Roblab_Data) %in% (rownames(validatedhits))),]
+Roblab_Data599<-t(as.data.frame(Roblab_Data599))
+Cox_Data599<-Cox_Data[which(rownames(Cox_Data) %in% rownames(validatedhits)),]
+Cox_Data599<-t(as.data.frame(Cox_Data599))
+
+##Roblab
+Rob.pca <-prcomp(scale(m2beta(Roblab_Data599), center = TRUE, scale = FALSE))
+summary(Rob.pca)
+
+##Plot
+# create data frame with scores
+scores = as.data.frame(Rob.pca$x)
+scores<-scores[order(rownames(scores)),]
+Roblab_des<-Roblab_des[order(rownames(Roblab_des)),]
+all(rownames(Roblab_des)==rownames(scores))##TRUE
+
+Path<-as.data.frame(Roblab_des$group)
+rownames(Path)<-rownames(Roblab_des)
+all(rownames(Path)==rownames(scores))##TRUE
+scores<-merge(scores,Path,by='row.names')
+rownames(scores)<-scores$Row.names
+scores$Row.names<-NULL
+scores$Path<-scores$`Roblab_des$group`
+scores$`Roblab_des$group`<-NULL
+
+##Pathology colour
+(v.grp.col<-as.vector(scores$Path))
+(v.grp.col<-gsub("Term","#696969",v.grp.col))
+(v.grp.col<-gsub("PreT","#7fd071",v.grp.col))
+(v.grp.col<-gsub("LOPE","#000199",v.grp.col))
+(v.grp.col<-gsub("IUGR","#fa7200",v.grp.col))
+(v.grp.col<-gsub("EOPE","#02c0fa",v.grp.col))
+v.grp.col
+
+# plot of observations
+Roblab_pca<-ggplot(data = scores, aes(x = PC1, y = PC2, label = rownames(scores))) +
+  geom_hline(yintercept = 0, colour = "gray65") +
+  geom_vline(xintercept = 0, colour = "gray65") +
+  geom_text(colour = v.grp.col) +
+  ggtitle("PCA plot of Discovery cohort samples")+
+  theme_bw()
+
+#legend("bottomleft",c("Term","PreT","LOPE","IUGR","EOPE"),fill=c("#696969","#7fd071","#000199","#02c0fa"))
+
+##Cox
+Cox.pca <-prcomp(scale(m2beta(Cox_Data599), center = TRUE, scale = FALSE))
+summary(Cox.pca)
+
+##Plot
+# create data frame with scores
+scores = as.data.frame(Cox.pca$x)
+scores<-scores[order(rownames(scores)),]
+Cox_des<-Cox_des[order(rownames(Cox_des)),]
+all(rownames(Cox_des)==rownames(scores))##TRUE
+
+Path<-as.data.frame(Cox_des$GRP)
+rownames(Path)<-rownames(Cox_des)
+all(rownames(Path)==rownames(scores))##TRUE
+scores<-merge(scores,Path,by='row.names')
+rownames(scores)<-scores$Row.names
+scores$Row.names<-NULL
+scores$Path<-scores$`Cox_des$GRP`
+scores$`Cox_des$GRP`<-NULL
+
+##Pathology colour
+(Coxv.grp.col<-as.vector(scores$Path))
+(Coxv.grp.col<-gsub("Term","#696969",Coxv.grp.col))
+(Coxv.grp.col<-gsub("PreT","#7fd071",Coxv.grp.col))
+(Coxv.grp.col<-gsub("LOPE","#000199",Coxv.grp.col))
+(Coxv.grp.col<-gsub("EOPE","#02c0fa",Coxv.grp.col))
+Coxv.grp.col
+
+# plot of observations
+Cox_pca<-ggplot(data = scores, aes(x = PC1, y = PC2, label = rownames(scores))) +
+  geom_hline(yintercept = 0, colour = "gray65") +
+  geom_vline(xintercept = 0, colour = "gray65") +
+  geom_text(colour = Coxv.grp.col) +
+  ggtitle("PCA plot of Validation cohort samples")+
+  theme_bw()
+```
+
+```{r PCA on all probes, fig.height=18,fig.width=18}
+##Roblab
+Roblab_Data_t<-t(Roblab_Data)
+Rob.pca <-prcomp(scale(m2beta(Roblab_Data_t), center = TRUE, scale = FALSE))
+summary(Rob.pca)
+
+##Plot
+# create data frame with scores
+scores = as.data.frame(Rob.pca$x)
+scores<-scores[order(rownames(scores)),]
+Roblab_des<-Roblab_des[order(rownames(Roblab_des)),]
+all(rownames(Roblab_des)==rownames(scores))##TRUE
+
+Path<-as.data.frame(Roblab_des$group)
+rownames(Path)<-rownames(Roblab_des)
+all(rownames(Path)==rownames(scores))##TRUE
+scores<-merge(scores,Path,by='row.names')
+rownames(scores)<-scores$Row.names
+scores$Row.names<-NULL
+scores$Path<-scores$`Roblab_des$group`
+scores$`Roblab_des$group`<-NULL
+
+##Pathology colour
+(v.grp.col<-as.vector(scores$Path))
+(v.grp.col<-gsub("Term","#696969",v.grp.col))
+(v.grp.col<-gsub("PreT","#7fd071",v.grp.col))
+(v.grp.col<-gsub("LOPE","#000199",v.grp.col))
+(v.grp.col<-gsub("IUGR","#fa7200",v.grp.col))
+(v.grp.col<-gsub("EOPE","#02c0fa",v.grp.col))
+v.grp.col
+
+# plot of observations
+Roblab_pca<-ggplot(data = scores, aes(x = PC1, y = PC2, label = rownames(scores))) +
+  geom_hline(yintercept = 0, colour = "gray65") +
+  geom_vline(xintercept = 0, colour = "gray65") +
+  geom_text(colour = v.grp.col) +
+  ggtitle("PCA plot of Discovery cohort samples")+
+  theme_bw()
+
+Roblab_pca
+
+#legend("bottomleft",c("Term","PreT","LOPE","IUGR","EOPE"),fill=c("#696969","#7fd071","#000199","#02c0fa"))
+
+##Cox
+Cox_Data_t<-t(Cox_Data)
+Cox.pca <-prcomp(scale(m2beta(Cox_Data_t), center = TRUE, scale = FALSE))
+summary(Cox.pca)
+
+##Plot
+# create data frame with scores
+scores = as.data.frame(Cox.pca$x)
+scores<-scores[order(rownames(scores)),]
+Cox_des<-Cox_des[order(rownames(Cox_des)),]
+all(rownames(Cox_des)==rownames(scores))##TRUE
+
+Path<-as.data.frame(Cox_des$GRP)
+rownames(Path)<-rownames(Cox_des)
+all(rownames(Path)==rownames(scores))##TRUE
+scores<-merge(scores,Path,by='row.names')
+rownames(scores)<-scores$Row.names
+scores$Row.names<-NULL
+scores$Path<-scores$`Cox_des$GRP`
+scores$`Cox_des$GRP`<-NULL
+
+##Pathology colour
+(Coxv.grp.col<-as.vector(scores$Path))
+(Coxv.grp.col<-gsub("Term","#696969",Coxv.grp.col))
+(Coxv.grp.col<-gsub("PreT","#7fd071",Coxv.grp.col))
+(Coxv.grp.col<-gsub("LOPE","#000199",Coxv.grp.col))
+(Coxv.grp.col<-gsub("EOPE","#02c0fa",Coxv.grp.col))
+Coxv.grp.col
+
+# plot of observations
+Cox_pca<-ggplot(data = scores, aes(x = PC1, y = PC2, label = rownames(scores))) +
+  geom_hline(yintercept = 0, colour = "gray65") +
+  geom_vline(xintercept = 0, colour = "gray65") +
+  geom_text(colour = Coxv.grp.col) +
+  ggtitle("PCA plot of Validation cohort samples")+
+  theme_bw()
+
+Cox_pca
+```
+
+To try to comment on global DNAm of these samples, I will take an average of DNAm across all probes on the array and plot them between the group. LR will be used to see is global DNAm differs between groups accounting for fetal sex
+```{r Joyplots,fig.height=18,fig.width=18}
+##install.packages("ggjoy")
+library(devtools)
+##install_github("clauswilke/ggjoy")
+library(ggplot2)
+library(ggjoy)
+
+##Roblab
+##remove infinite values
+sum(is.na(Roblab_Data))##0
+sum(is.infinite(Roblab_Data))##65
+
+impute.med.Inf <- function(x) replace(x, is.infinite(x), median(x, na.rm = TRUE))
+Roblab_Data<-impute.med.Inf(Roblab_Data)
+sum(is.infinite(Roblab_Data))##0
+
+##Calculate the average per sample (column)
+Roblab_Data<-m2beta(Roblab_Data)
+Roblab_Mean<-as.data.frame(colMeans(Roblab_Data))
+colnames(Roblab_Mean)<-c("Avg_Beta")
+
+Roblab_des_GRP<-as.data.frame(Roblab_des$group)
+rownames(Roblab_des_GRP)<-rownames(Roblab_des)
+Roblab_Mean2<-merge(Roblab_Mean,Roblab_des_GRP,by='row.names')
+Roblab_Mean2$Row.names<-NULL
+colnames(Roblab_Mean2)<-c("Avg_Beta","GRP")
+
+##Joy Plot
+Roblab_AvgDist<-ggplot(Roblab_Mean2, aes(x = Avg_Beta, y = GRP,fill=GRP)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0)) + # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#02c0fa", "#fa7200","#000199","#7fd071","#696969"),guide="legend") 
+
+##Cox
+sum(is.na(Cox_Data))##0
+sum(is.infinite(Cox_Data))##4
+
+impute.med.Inf <- function(x) replace(x, is.infinite(x), median(x, na.rm = TRUE))
+Cox_Data<-impute.med.Inf(Cox_Data)
+sum(is.infinite(Cox_Data))##0
+
+##Calculate the average per sample (column)
+Cox_Data<-m2beta(Cox_Data)
+Cox_Mean<-as.data.frame(colMeans(Cox_Data))
+colnames(Cox_Mean)<-c("Avg_Beta")
+
+Cox_des_GRP<-as.data.frame(Cox_des$GRP)
+rownames(Cox_des_GRP)<-rownames(Cox_des)
+Cox_Mean2<-merge(Cox_Mean,Cox_des_GRP,by='row.names')
+Cox_Mean2$Row.names<-NULL
+colnames(Cox_Mean2)<-c("Avg_Beta","GRP")
+
+##Joy Plot
+Cox_AvgDist<-ggplot(Cox_Mean2, aes(x = Avg_Beta, y = GRP,fill=GRP)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0)) + # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#02c0fa","#000199","#7fd071","#696969"),guide="legend") 
+
+grid.arrange(Roblab_AvgDist,Cox_AvgDist,nrow=1)
+```
+
+Adding in other gene information about the validated hits that was requested by the reviewer.
+```{r Putting more gene annoation in validated sites table}
+validatedhits<-read.table('Cox_Roblab_PersistentHits_Betas_Pval_GeneName_2017.txt')
+anno<-read.table('Uber annotation.txt',header=T)
+anno_subset<-anno[,c("MAPINFO","Relation_to_UCSC_CpG_Island","Enhancer","Regulatory_Feature_Group")]
+
+anno_subset_599<-anno_subset[which(rownames(anno_subset) %in% rownames(validatedhits)),]
+
+ValidatedHits_ExtraInfo<-merge(validatedhits,anno_subset_599, by='row.names')
+write.table(ValidatedHits_ExtraInfo,file="ValidatedHits_ExtraInfo.txt")
+```
+
+```{r Looking at specific sites,fig.height=18,fig.width=18}
+##Sites that have DB>0.1 in both cohort
+
+DB0.1Sites<-subset(validatedhits,validatedhits$BVal>0.1 & validatedhits$Cox_Betas>0.1)##128 sites
+DB0.15Sites<-subset(validatedhits,validatedhits$BVal>abs(0.15) & validatedhits$Cox_Betas>abs(0.15))##7
+
+##JoyPlots to look at distributions between groups
+##Roblab
+##remove infinite values
+sum(is.na(Roblab_Data))##0
+sum(is.infinite(Roblab_Data))##65
+
+impute.med.Inf <- function(x) replace(x, is.infinite(x), median(x, na.rm = TRUE))
+Roblab_Data<-impute.med.Inf(Roblab_Data)
+sum(is.infinite(Roblab_Data))##0
+
+##Cox
+sum(is.na(Cox_Data))##0
+sum(is.infinite(Cox_Data))##4
+
+impute.med.Inf <- function(x) replace(x, is.infinite(x), median(x, na.rm = TRUE))
+Cox_Data<-impute.med.Inf(Cox_Data)
+sum(is.infinite(Cox_Data))##0
+
+##Subset each of the top 7 hits
+##RASA3
+Roblab_RASA3<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg19674091'),])
+Roblab_RASA3<-m2beta(Roblab_RASA3)
+colnames(Roblab_RASA3)<-c("beta")
+
+Roblab_des_GRP<-as.data.frame(Roblab_des$group)
+rownames(Roblab_des_GRP)<-rownames(Roblab_des)
+Roblab_RASA3<-merge(Roblab_RASA3,Roblab_des_GRP,by='row.names')
+Roblab_RASA3$Row.names<-NULL
+colnames(Roblab_RASA3)<-c("Beta","GRP")
+
+Cox_RASA3<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg19674091'),])
+Cox_RASA3<-m2beta(Cox_RASA3)
+colnames(Cox_RASA3)<-c("beta")
+
+Cox_des_GRP<-as.data.frame(Cox_des$GRP)
+rownames(Cox_des_GRP)<-rownames(Cox_des)
+Cox_RASA3<-merge(Cox_RASA3,Cox_des_GRP,by='row.names')
+Cox_RASA3$Row.names<-NULL
+colnames(Cox_RASA3)<-c("Beta","GRP")
+
+##Joy Plot
+Roblab_RASA3Dist<-ggplot(Roblab_RASA3, aes(x = Beta, y = GRP,fill=GRP)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#02c0fa", "#fa7200","#000199","#7fd071","#696969"),guide="legend") 
+
+Cox_RASA3Dist<-ggplot(Cox_RASA3, aes(x = Beta, y = GRP, fill=GRP)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#02c0fa","#000199","#7fd071","#696969"),guide="legend") 
+
+grid.arrange(Roblab_RASA3Dist,Cox_RASA3Dist,nrow=1)
+
+#ZP3
+Roblab_ZP3<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg18474072'),])
+Roblab_ZP3<-m2beta(Roblab_ZP3)
+colnames(Roblab_ZP3)<-c("beta")
+
+Roblab_des_GRP<-as.data.frame(Roblab_des$group)
+rownames(Roblab_des_GRP)<-rownames(Roblab_des)
+Roblab_ZP3<-merge(Roblab_ZP3,Roblab_des_GRP,by='row.names')
+Roblab_ZP3$Row.names<-NULL
+colnames(Roblab_ZP3)<-c("Beta","GRP")
+
+Cox_ZP3<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg18474072'),])
+Cox_ZP3<-m2beta(Cox_ZP3)
+colnames(Cox_ZP3)<-c("beta")
+
+Cox_des_GRP<-as.data.frame(Cox_des$GRP)
+rownames(Cox_des_GRP)<-rownames(Cox_des)
+Cox_ZP3<-merge(Cox_ZP3,Cox_des_GRP,by='row.names')
+Cox_ZP3$Row.names<-NULL
+colnames(Cox_ZP3)<-c("Beta","GRP")
+
+##Joy Plot
+Roblab_ZP3Dist<-ggplot(Roblab_ZP3, aes(x = Beta, y = GRP,fill=GRP)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#02c0fa", "#fa7200","#000199","#7fd071","#696969"),guide="legend") 
+
+Cox_ZP3Dist<-ggplot(Cox_ZP3, aes(x = Beta, y = GRP, fill=GRP)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#02c0fa","#000199","#7fd071","#696969"),guide="legend") 
+
+grid.arrange(Roblab_ZP3Dist,Cox_ZP3Dist,nrow=1)
+
+##CTTNBP2
+Roblab_CTTNBP2<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg26625897'),])
+Roblab_CTTNBP2<-m2beta(Roblab_CTTNBP2)
+colnames(Roblab_CTTNBP2)<-c("beta")
+
+Roblab_des_GRP<-as.data.frame(Roblab_des$group)
+rownames(Roblab_des_GRP)<-rownames(Roblab_des)
+Roblab_CTTNBP2<-merge(Roblab_CTTNBP2,Roblab_des_GRP,by='row.names')
+Roblab_CTTNBP2$Row.names<-NULL
+colnames(Roblab_CTTNBP2)<-c("Beta","GRP")
+
+Cox_CTTNBP2<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg26625897'),])
+Cox_CTTNBP2<-m2beta(Cox_CTTNBP2)
+colnames(Cox_CTTNBP2)<-c("beta")
+
+Cox_des_GRP<-as.data.frame(Cox_des$GRP)
+rownames(Cox_des_GRP)<-rownames(Cox_des)
+Cox_CTTNBP2<-merge(Cox_CTTNBP2,Cox_des_GRP,by='row.names')
+Cox_CTTNBP2$Row.names<-NULL
+colnames(Cox_CTTNBP2)<-c("Beta","GRP")
+
+##Joy Plot
+Roblab_CTTNBP2Dist<-ggplot(Roblab_CTTNBP2, aes(x = Beta, y = GRP,fill=GRP)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#02c0fa", "#fa7200","#000199","#7fd071","#696969"),guide="legend") 
+
+Cox_CTTNBP2Dist<-ggplot(Cox_CTTNBP2, aes(x = Beta, y = GRP, fill=GRP)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#02c0fa","#000199","#7fd071","#696969"),guide="legend") 
+
+grid.arrange(Roblab_CTTNBP2Dist,Cox_CTTNBP2Dist,nrow=1)
+
+##LOC100507582
+Roblab_LOC100507582<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg26625897'),])
+Roblab_LOC100507582<-m2beta(Roblab_LOC100507582)
+colnames(Roblab_LOC100507582)<-c("beta")
+
+Roblab_des_GRP<-as.data.frame(Roblab_des$group)
+rownames(Roblab_des_GRP)<-rownames(Roblab_des)
+Roblab_LOC100507582<-merge(Roblab_LOC100507582,Roblab_des_GRP,by='row.names')
+Roblab_LOC100507582$Row.names<-NULL
+colnames(Roblab_LOC100507582)<-c("Beta","GRP")
+
+Cox_LOC100507582<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg26625897'),])
+Cox_LOC100507582<-m2beta(Cox_LOC100507582)
+colnames(Cox_LOC100507582)<-c("beta")
+
+Cox_des_GRP<-as.data.frame(Cox_des$GRP)
+rownames(Cox_des_GRP)<-rownames(Cox_des)
+Cox_LOC100507582<-merge(Cox_LOC100507582,Cox_des_GRP,by='row.names')
+Cox_LOC100507582$Row.names<-NULL
+colnames(Cox_LOC100507582)<-c("Beta","GRP")
+
+##Joy Plot
+Roblab_LOC100507582Dist<-ggplot(Roblab_LOC100507582, aes(x = Beta, y = GRP,fill=GRP)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#02c0fa", "#fa7200","#000199","#7fd071","#696969"),guide="legend") 
+
+Cox_LOC100507582Dist<-ggplot(Cox_LOC100507582, aes(x = Beta, y = GRP, fill=GRP)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#02c0fa","#000199","#7fd071","#696969"),guide="legend") 
+
+grid.arrange(Roblab_LOC100507582Dist,Cox_LOC100507582Dist,nrow=1)
+
+##DUSP1
+Roblab_DUSP1<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg10668363'),])
+Roblab_DUSP1<-m2beta(Roblab_DUSP1)
+colnames(Roblab_DUSP1)<-c("beta")
+
+Roblab_des_GRP<-as.data.frame(Roblab_des$group)
+rownames(Roblab_des_GRP)<-rownames(Roblab_des)
+Roblab_DUSP1<-merge(Roblab_DUSP1,Roblab_des_GRP,by='row.names')
+Roblab_DUSP1$Row.names<-NULL
+colnames(Roblab_DUSP1)<-c("Beta","GRP")
+
+Cox_DUSP1<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg10668363'),])
+Cox_DUSP1<-m2beta(Cox_DUSP1)
+colnames(Cox_DUSP1)<-c("beta")
+
+Cox_des_GRP<-as.data.frame(Cox_des$GRP)
+rownames(Cox_des_GRP)<-rownames(Cox_des)
+Cox_DUSP1<-merge(Cox_DUSP1,Cox_des_GRP,by='row.names')
+Cox_DUSP1$Row.names<-NULL
+colnames(Cox_DUSP1)<-c("Beta","GRP")
+
+##Joy Plot
+Roblab_DUSP1Dist<-ggplot(Roblab_DUSP1, aes(x = Beta, y = GRP,fill=GRP)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#02c0fa", "#fa7200","#000199","#7fd071","#696969"),guide="legend") 
+
+Cox_DUSP1Dist<-ggplot(Cox_DUSP1, aes(x = Beta, y = GRP, fill=GRP)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#02c0fa","#000199","#7fd071","#696969"),guide="legend") 
+
+grid.arrange(Roblab_DUSP1Dist,Cox_DUSP1Dist,nrow=1)
+
+##NIPAL2
+Roblab_NIPAL2<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg13672136'),])
+Roblab_NIPAL2<-m2beta(Roblab_NIPAL2)
+colnames(Roblab_NIPAL2)<-c("beta")
+
+Roblab_des_GRP<-as.data.frame(Roblab_des$group)
+rownames(Roblab_des_GRP)<-rownames(Roblab_des)
+Roblab_NIPAL2<-merge(Roblab_NIPAL2,Roblab_des_GRP,by='row.names')
+Roblab_NIPAL2$Row.names<-NULL
+colnames(Roblab_NIPAL2)<-c("Beta","GRP")
+
+Cox_NIPAL2<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg13672136'),])
+Cox_NIPAL2<-m2beta(Cox_NIPAL2)
+colnames(Cox_NIPAL2)<-c("beta")
+
+Cox_des_GRP<-as.data.frame(Cox_des$GRP)
+rownames(Cox_des_GRP)<-rownames(Cox_des)
+Cox_NIPAL2<-merge(Cox_NIPAL2,Cox_des_GRP,by='row.names')
+Cox_NIPAL2$Row.names<-NULL
+colnames(Cox_NIPAL2)<-c("Beta","GRP")
+
+##Joy Plot
+Roblab_NIPAL2Dist<-ggplot(Roblab_NIPAL2, aes(x = Beta, y = GRP,fill=GRP)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#02c0fa", "#fa7200","#000199","#7fd071","#696969"),guide="legend") 
+
+Cox_NIPAL2Dist<-ggplot(Cox_NIPAL2, aes(x = Beta, y = GRP, fill=GRP)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#02c0fa","#000199","#7fd071","#696969"),guide="legend") 
+
+grid.arrange(Roblab_NIPAL2Dist,Cox_NIPAL2Dist,nrow=1)
+
+##EGFR
+Roblab_EGFR<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg12436772'),])
+Roblab_EGFR<-m2beta(Roblab_EGFR)
+colnames(Roblab_EGFR)<-c("beta")
+
+Roblab_des_GRP<-as.data.frame(Roblab_des$group)
+rownames(Roblab_des_GRP)<-rownames(Roblab_des)
+Roblab_EGFR<-merge(Roblab_EGFR,Roblab_des_GRP,by='row.names')
+Roblab_EGFR$Row.names<-NULL
+colnames(Roblab_EGFR)<-c("Beta","GRP")
+
+Cox_EGFR<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg12436772'),])
+Cox_EGFR<-m2beta(Cox_EGFR)
+colnames(Cox_EGFR)<-c("beta")
+
+Cox_des_GRP<-as.data.frame(Cox_des$GRP)
+rownames(Cox_des_GRP)<-rownames(Cox_des)
+Cox_EGFR<-merge(Cox_EGFR,Cox_des_GRP,by='row.names')
+Cox_EGFR$Row.names<-NULL
+colnames(Cox_EGFR)<-c("Beta","GRP")
+
+##Joy Plot
+Roblab_EGFRDist<-ggplot(Roblab_EGFR, aes(x = Beta, y = GRP,fill=GRP)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#02c0fa", "#fa7200","#000199","#7fd071","#696969"),guide="legend") 
+
+Cox_EGFRDist<-ggplot(Cox_EGFR, aes(x = Beta, y = GRP, fill=GRP)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#02c0fa","#000199","#7fd071","#696969"),guide="legend") 
+
+grid.arrange(Roblab_EGFRDist,Cox_EGFRDist,nrow=1)
+
+```
+
+```{r Plotting on top 7 hits,fig.height=18,fig.width=18}
+Roblab_Top7<-Roblab_Data[which(rownames(Roblab_Data) %in% rownames(DB0.15Sites)),]
+Cox_Top7<- Cox_Data[which(rownames(Cox_Data) %in% rownames(DB0.15Sites)),]
+
+(v.grp.col<-as.vector(Roblab_des$group))
+(v.grp.col<-gsub("Term","#696969",v.grp.col))
+(v.grp.col<-gsub("PreT","#7fd071",v.grp.col))
+(v.grp.col<-gsub("LOPE","#000199",v.grp.col))
+(v.grp.col<-gsub("IUGR","#fa7200",v.grp.col))
+(v.grp.col<-gsub("EOPE","#02c0fa",v.grp.col))
+v.grp.col
+
+(Coxv.grp.col<-as.vector(Cox_des$GRP))
+(Coxv.grp.col<-gsub("Term","#696969",Coxv.grp.col))
+(Coxv.grp.col<-gsub("PreT","#7fd071",Coxv.grp.col))
+(Coxv.grp.col<-gsub("LOPE","#000199",Coxv.grp.col))
+(Coxv.grp.col<-gsub("EOPE","#02c0fa",Coxv.grp.col))
+Coxv.grp.col
+
+##Roblab
+mvalues =Roblab_Top7
+D = dist(t(mvalues))
+clust = hclust(D,method="complete")
+plot(as.phylo(clust), lab4ut="axial", type = "unrooted", no.margin = TRUE, edge.width=2,cex=0.6,tip.col=v.grp.col)
+legend("bottomright",c("Term","PreT","LOPE","IUGR","EOPE"),fill=c("#696969","#7fd071","#000199","#fa7200","#02c0fa"))
+##This is interesting, there appears to be an EOPE groups, LOPE group and control group
+
+##Cox
+mvalues =Cox_Top7
+D = dist(t(mvalues))
+clust = hclust(D,method="complete")
+plot(as.phylo(clust), lab4ut="axial", type = "unrooted", no.margin = TRUE, edge.width=2,cex=0.6,tip.col=Coxv.grp.col)
+legend("bottomright",c("Term","PreT","LOPE","IUGR","EOPE"),fill=c("#696969","#7fd071","#000199","#02c0fa"))
+##This is interesting, there appears to be an EOPE groups, LOPE group and control group
+```
+
+```{r Joy plots divided by cluster on high DB Sites biological meaningful,fig.height=18,fig.width=18}
+##Sites that met FDR<0.05 in the discovery cohort
+Roblab_EOPE0.05<-read.table('Roblab_EOPE_FDR0.05.txt',header=T)
+
+##Load Cox lab LM to get the betas
+load('ttbeta_all_Cox_LM.RData')
+
+##Merge the betas
+EOPEvspreterm_betas<-ttbeta_all[which(rownames(ttbeta_all) %in% rownames(Roblab_EOPE0.05)),]
+head(EOPEvspreterm_betas)
+EOPEvspreterm_betas2<-as.data.frame(EOPEvspreterm_betas[,c("PreTvsEOPE")])
+rownames(EOPEvspreterm_betas2)<-rownames(EOPEvspreterm_betas)
+EOPEvspreterm_betas2$BVal_EOPE<-EOPEvspreterm_betas2$`EOPEvspreterm_betas[, c("PreTvsEOPE")]`
+EOPEvspreterm_betas2$`EOPEvspreterm_betas[, c("PreTvsEOPE")]`<-NULL
+
+Roblab_Cox_EOPEBetas<-merge(Roblab_EOPE0.05,EOPEvspreterm_betas2,by='row.names')##difference in probe number due to bad quality probes removed from Cox data
+
+##Merge with annotation
+anno<-read.table('Uber annotation.txt',header=T)
+##Merge with EOPE Data
+rownames(Roblab_Cox_EOPEBetas)<-Roblab_Cox_EOPEBetas$Row.names
+Roblab_Cox_EOPEBetas_Gene<-merge(Roblab_Cox_EOPEBetas,anno,by='row.names')##74016 probes
+rownames(Roblab_Cox_EOPEBetas_Gene)<-Roblab_Cox_EOPEBetas_Gene$IlmnID
+##Use only the data needed (Betas,IlmnID,GeneName)
+Roblab_Cox_EOPEBetas_Gene<-Roblab_Cox_EOPEBetas_Gene[,c("PreTvsEOPE","BVal_EOPE","IlmnID","Closest_TSS_gene_name")]
+
+##Sites DB>0.2
+DB0.2sites<-subset(Roblab_Cox_EOPEBetas_Gene,Roblab_Cox_EOPEBetas_Gene$PreTvsEOPE>abs(0.2) & Roblab_Cox_EOPEBetas_Gene$BVal_EOPE>abs(0.2))
+
+
+##Let's go with these sites
+##Change E1 and E2 in the design matrix to just E1
+Roblab_des$Cluster<-recode(Roblab_des$Cluster,"E2"="E1")
+Cox_des$Cluster<-recode(Cox_des$Cluster,"E2"="E1")
+
+##TEAD3
+Roblab_TEAD3<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg10893014'),])
+Roblab_TEAD3<-m2beta(Roblab_TEAD3)
+colnames(Roblab_TEAD3)<-c("beta")
+
+Roblab_des_Clus<-as.data.frame(Roblab_des$Cluster)
+rownames(Roblab_des_Clus)<-rownames(Roblab_des)
+Roblab_TEAD3<-merge(Roblab_TEAD3,Roblab_des_Clus,by='row.names')
+Roblab_TEAD3$Row.names<-NULL
+colnames(Roblab_TEAD3)<-c("Beta","Cluster")
+
+Cox_TEAD3<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg10893014'),])
+Cox_TEAD3<-m2beta(Cox_TEAD3)
+colnames(Cox_TEAD3)<-c("beta")
+
+Cox_des_Clus<-as.data.frame(Cox_des$Cluster)
+rownames(Cox_des_Clus)<-rownames(Cox_des)
+Cox_TEAD3<-merge(Cox_TEAD3,Cox_des_Clus,by='row.names')
+Cox_TEAD3$Row.names<-NULL
+colnames(Cox_TEAD3)<-c("Beta","Cluster")
+
+##Joy Plot
+Roblab_TEAD3Dist<-ggplot(Roblab_TEAD3, aes(x = Beta, y = Cluster,fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+Cox_TEAD3Dist<-ggplot(Cox_TEAD3, aes(x = Beta, y = Cluster, fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+grid.arrange(Roblab_TEAD3Dist,Cox_TEAD3Dist,nrow=1)
+
+##FN1
+Roblab_FN1<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg12436772'),])
+Roblab_FN1<-m2beta(Roblab_FN1)
+colnames(Roblab_FN1)<-c("beta")
+
+Roblab_des_Clus<-as.data.frame(Roblab_des$Cluster)
+rownames(Roblab_des_Clus)<-rownames(Roblab_des)
+Roblab_FN1<-merge(Roblab_FN1,Roblab_des_Clus,by='row.names')
+Roblab_FN1$Row.names<-NULL
+colnames(Roblab_FN1)<-c("Beta","Cluster")
+
+Cox_FN1<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg12436772'),])
+Cox_FN1<-m2beta(Cox_FN1)
+colnames(Cox_FN1)<-c("beta")
+
+Cox_des_Clus<-as.data.frame(Cox_des$Cluster)
+rownames(Cox_des_Clus)<-rownames(Cox_des)
+Cox_FN1<-merge(Cox_FN1,Cox_des_Clus,by='row.names')
+Cox_FN1$Row.names<-NULL
+colnames(Cox_FN1)<-c("Beta","Cluster")
+
+##Joy Plot
+Roblab_FN1Dist<-ggplot(Roblab_FN1, aes(x = Beta, y = Cluster,fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+Cox_FN1Dist<-ggplot(Cox_FN1, aes(x = Beta, y = Cluster, fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+grid.arrange(Roblab_FN1Dist,Cox_FN1Dist,nrow=1)
+
+##PKM2
+Roblab_PKM2<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg22234930'),])
+Roblab_PKM2<-m2beta(Roblab_PKM2)
+colnames(Roblab_PKM2)<-c("beta")
+
+Roblab_des_Clus<-as.data.frame(Roblab_des$Cluster)
+rownames(Roblab_des_Clus)<-rownames(Roblab_des)
+Roblab_PKM2<-merge(Roblab_PKM2,Roblab_des_Clus,by='row.names')
+Roblab_PKM2$Row.names<-NULL
+colnames(Roblab_PKM2)<-c("Beta","Cluster")
+
+Cox_PKM2<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg22234930'),])
+Cox_PKM2<-m2beta(Cox_PKM2)
+colnames(Cox_PKM2)<-c("beta")
+
+Cox_des_Clus<-as.data.frame(Cox_des$Cluster)
+rownames(Cox_des_Clus)<-rownames(Cox_des)
+Cox_PKM2<-merge(Cox_PKM2,Cox_des_Clus,by='row.names')
+Cox_PKM2$Row.names<-NULL
+colnames(Cox_PKM2)<-c("Beta","Cluster")
+
+##Joy Plot
+Roblab_PKM2Dist<-ggplot(Roblab_PKM2, aes(x = Beta, y = Cluster,fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+Cox_PKM2Dist<-ggplot(Cox_PKM2, aes(x = Beta, y = Cluster, fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+grid.arrange(Roblab_PKM2Dist,Cox_PKM2Dist,nrow=1)
+
+##KRT15
+Roblab_KRT15<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg26625897'),])
+Roblab_KRT15<-m2beta(Roblab_KRT15)
+colnames(Roblab_KRT15)<-c("beta")
+
+Roblab_des_Clus<-as.data.frame(Roblab_des$Cluster)
+rownames(Roblab_des_Clus)<-rownames(Roblab_des)
+Roblab_KRT15<-merge(Roblab_KRT15,Roblab_des_Clus,by='row.names')
+Roblab_KRT15$Row.names<-NULL
+colnames(Roblab_KRT15)<-c("Beta","Cluster")
+
+Cox_KRT15<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg26625897'),])
+Cox_KRT15<-m2beta(Cox_KRT15)
+colnames(Cox_KRT15)<-c("beta")
+
+Cox_des_Clus<-as.data.frame(Cox_des$Cluster)
+rownames(Cox_des_Clus)<-rownames(Cox_des)
+Cox_KRT15<-merge(Cox_KRT15,Cox_des_Clus,by='row.names')
+Cox_KRT15$Row.names<-NULL
+colnames(Cox_KRT15)<-c("Beta","Cluster")
+
+##Joy Plot
+Roblab_KRT15Dist<-ggplot(Roblab_KRT15, aes(x = Beta, y = Cluster,fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+Cox_KRT15Dist<-ggplot(Cox_KRT15, aes(x = Beta, y = Cluster, fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+grid.arrange(Roblab_KRT15Dist,Cox_KRT15Dist,nrow=1)
+
+##JUNB cg22996170
+Roblab_JUNB<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg22996170'),])
+Roblab_JUNB<-m2beta(Roblab_JUNB)
+colnames(Roblab_JUNB)<-c("beta")
+
+Roblab_des_Clus<-as.data.frame(Roblab_des$Cluster)
+rownames(Roblab_des_Clus)<-rownames(Roblab_des)
+Roblab_JUNB<-merge(Roblab_JUNB,Roblab_des_Clus,by='row.names')
+Roblab_JUNB$Row.names<-NULL
+colnames(Roblab_JUNB)<-c("Beta","Cluster")
+
+Cox_JUNB<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg22996170'),])
+Cox_JUNB<-m2beta(Cox_JUNB)
+colnames(Cox_JUNB)<-c("beta")
+
+Cox_des_Clus<-as.data.frame(Cox_des$Cluster)
+rownames(Cox_des_Clus)<-rownames(Cox_des)
+Cox_JUNB<-merge(Cox_JUNB,Cox_des_Clus,by='row.names')
+Cox_JUNB$Row.names<-NULL
+colnames(Cox_JUNB)<-c("Beta","Cluster")
+
+##Joy Plot
+Roblab_JUNBDist<-ggplot(Roblab_JUNB, aes(x = Beta, y = Cluster,fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+Cox_JUNBDist<-ggplot(Cox_JUNB, aes(x = Beta, y = Cluster, fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+grid.arrange(Roblab_JUNBDist,Cox_JUNBDist,nrow=1)
+
+##FAM3B
+Roblab_FAM3B<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg09179211'),])
+Roblab_FAM3B<-m2beta(Roblab_FAM3B)
+colnames(Roblab_FAM3B)<-c("beta")
+
+Roblab_des_Clus<-as.data.frame(Roblab_des$Cluster)
+rownames(Roblab_des_Clus)<-rownames(Roblab_des)
+Roblab_FAM3B<-merge(Roblab_FAM3B,Roblab_des_Clus,by='row.names')
+Roblab_FAM3B$Row.names<-NULL
+colnames(Roblab_FAM3B)<-c("Beta","Cluster")
+
+Cox_FAM3B<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg09179211'),])
+Cox_FAM3B<-m2beta(Cox_FAM3B)
+colnames(Cox_FAM3B)<-c("beta")
+
+Cox_des_Clus<-as.data.frame(Cox_des$Cluster)
+rownames(Cox_des_Clus)<-rownames(Cox_des)
+Cox_FAM3B<-merge(Cox_FAM3B,Cox_des_Clus,by='row.names')
+Cox_FAM3B$Row.names<-NULL
+colnames(Cox_FAM3B)<-c("Beta","Cluster")
+
+##Joy Plot
+Roblab_FAM3BDist<-ggplot(Roblab_FAM3B, aes(x = Beta, y = Cluster,fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+Cox_FAM3BDist<-ggplot(Cox_FAM3B, aes(x = Beta, y = Cluster, fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+grid.arrange(Roblab_FAM3BDist,Cox_FAM3BDist,nrow=1)
+
+##FAM3B-2
+Roblab_FAM3B<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg10054197'),])
+Roblab_FAM3B<-m2beta(Roblab_FAM3B)
+colnames(Roblab_FAM3B)<-c("beta")
+
+Roblab_des_Clus<-as.data.frame(Roblab_des$Cluster)
+rownames(Roblab_des_Clus)<-rownames(Roblab_des)
+Roblab_FAM3B<-merge(Roblab_FAM3B,Roblab_des_Clus,by='row.names')
+Roblab_FAM3B$Row.names<-NULL
+colnames(Roblab_FAM3B)<-c("Beta","Cluster")
+
+Cox_FAM3B<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg10054197'),])
+Cox_FAM3B<-m2beta(Cox_FAM3B)
+colnames(Cox_FAM3B)<-c("beta")
+
+Cox_des_Clus<-as.data.frame(Cox_des$Cluster)
+rownames(Cox_des_Clus)<-rownames(Cox_des)
+Cox_FAM3B<-merge(Cox_FAM3B,Cox_des_Clus,by='row.names')
+Cox_FAM3B$Row.names<-NULL
+colnames(Cox_FAM3B)<-c("Beta","Cluster")
+
+##Joy Plot
+Roblab_FAM3BDist<-ggplot(Roblab_FAM3B, aes(x = Beta, y = Cluster,fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+Cox_FAM3BDist<-ggplot(Cox_FAM3B, aes(x = Beta, y = Cluster, fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+grid.arrange(Roblab_FAM3BDist,Cox_FAM3BDist,nrow=1)
+
+##IL7-how well does it divide between cluster 2 and cluster 3
+Roblab_IL7<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg14556425'),])
+Roblab_IL7<-m2beta(Roblab_IL7)
+colnames(Roblab_IL7)<-c("beta")
+
+Roblab_des_Clus<-as.data.frame(Roblab_des$Cluster)
+rownames(Roblab_des_Clus)<-rownames(Roblab_des)
+Roblab_IL7<-merge(Roblab_IL7,Roblab_des_Clus,by='row.names')
+Roblab_IL7$Row.names<-NULL
+colnames(Roblab_IL7)<-c("Beta","Cluster")
+
+Cox_IL7<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg14556425'),])
+Cox_IL7<-m2beta(Cox_IL7)
+colnames(Cox_IL7)<-c("beta")
+
+Cox_des_Clus<-as.data.frame(Cox_des$Cluster)
+rownames(Cox_des_Clus)<-rownames(Cox_des)
+Cox_IL7<-merge(Cox_IL7,Cox_des_Clus,by='row.names')
+Cox_IL7$Row.names<-NULL
+colnames(Cox_IL7)<-c("Beta","Cluster")
+
+##Joy Plot
+Roblab_IL7Dist<-ggplot(Roblab_IL7, aes(x = Beta, y = Cluster,fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+Cox_IL7Dist<-ggplot(Cox_IL7, aes(x = Beta, y = Cluster, fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+grid.arrange(Roblab_IL7Dist,Cox_IL7Dist,nrow=1)
+
+##KIF21B
+Roblab_KIF21B<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg07344172'),])
+Roblab_KIF21B<-m2beta(Roblab_KIF21B)
+colnames(Roblab_KIF21B)<-c("beta")
+
+Roblab_des_Clus<-as.data.frame(Roblab_des$Cluster)
+rownames(Roblab_des_Clus)<-rownames(Roblab_des)
+Roblab_KIF21B<-merge(Roblab_KIF21B,Roblab_des_Clus,by='row.names')
+Roblab_KIF21B$Row.names<-NULL
+colnames(Roblab_KIF21B)<-c("Beta","Cluster")
+
+Cox_KIF21B<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg07344172'),])
+Cox_KIF21B<-m2beta(Cox_KIF21B)
+colnames(Cox_KIF21B)<-c("beta")
+
+Cox_des_Clus<-as.data.frame(Cox_des$Cluster)
+rownames(Cox_des_Clus)<-rownames(Cox_des)
+Cox_KIF21B<-merge(Cox_KIF21B,Cox_des_Clus,by='row.names')
+Cox_KIF21B$Row.names<-NULL
+colnames(Cox_KIF21B)<-c("Beta","Cluster")
+
+##Joy Plot
+Roblab_KIF21BDist<-ggplot(Roblab_KIF21B, aes(x = Beta, y = Cluster,fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+Cox_KIF21BDist<-ggplot(Cox_KIF21B, aes(x = Beta, y = Cluster, fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+grid.arrange(Roblab_KIF21BDist,Cox_KIF21BDist,nrow=1)
+
+##SLC5A9
+Roblab_SLC5A9<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg25469314'),])
+Roblab_SLC5A9<-m2beta(Roblab_SLC5A9)
+colnames(Roblab_SLC5A9)<-c("beta")
+
+Roblab_des_Clus<-as.data.frame(Roblab_des$Cluster)
+rownames(Roblab_des_Clus)<-rownames(Roblab_des)
+Roblab_SLC5A9<-merge(Roblab_SLC5A9,Roblab_des_Clus,by='row.names')
+Roblab_SLC5A9$Row.names<-NULL
+colnames(Roblab_SLC5A9)<-c("Beta","Cluster")
+
+Cox_SLC5A9<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg25469314'),])
+Cox_SLC5A9<-m2beta(Cox_SLC5A9)
+colnames(Cox_SLC5A9)<-c("beta")
+
+Cox_des_Clus<-as.data.frame(Cox_des$Cluster)
+rownames(Cox_des_Clus)<-rownames(Cox_des)
+Cox_SLC5A9<-merge(Cox_SLC5A9,Cox_des_Clus,by='row.names')
+Cox_SLC5A9$Row.names<-NULL
+colnames(Cox_SLC5A9)<-c("Beta","Cluster")
+
+##Joy Plot
+Roblab_SLC5A9Dist<-ggplot(Roblab_SLC5A9, aes(x = Beta, y = Cluster,fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+Cox_SLC5A9Dist<-ggplot(Cox_SLC5A9, aes(x = Beta, y = Cluster, fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+grid.arrange(Roblab_SLC5A9Dist,Cox_SLC5A9Dist,nrow=1)
+
+##HIVEP3
+Roblab_HIVEP3<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg25469314'),])
+Roblab_HIVEP3<-m2beta(Roblab_HIVEP3)
+colnames(Roblab_HIVEP3)<-c("beta")
+
+Roblab_des_Clus<-as.data.frame(Roblab_des$Cluster)
+rownames(Roblab_des_Clus)<-rownames(Roblab_des)
+Roblab_HIVEP3<-merge(Roblab_HIVEP3,Roblab_des_Clus,by='row.names')
+Roblab_HIVEP3$Row.names<-NULL
+colnames(Roblab_HIVEP3)<-c("Beta","Cluster")
+
+Cox_HIVEP3<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg25469314'),])
+Cox_HIVEP3<-m2beta(Cox_HIVEP3)
+colnames(Cox_HIVEP3)<-c("beta")
+
+Cox_des_Clus<-as.data.frame(Cox_des$Cluster)
+rownames(Cox_des_Clus)<-rownames(Cox_des)
+Cox_HIVEP3<-merge(Cox_HIVEP3,Cox_des_Clus,by='row.names')
+Cox_HIVEP3$Row.names<-NULL
+colnames(Cox_HIVEP3)<-c("Beta","Cluster")
+
+##Joy Plot
+Roblab_HIVEP3Dist<-ggplot(Roblab_HIVEP3, aes(x = Beta, y = Cluster,fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+Cox_HIVEP3Dist<-ggplot(Cox_HIVEP3, aes(x = Beta, y = Cluster, fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+grid.arrange(Roblab_HIVEP3Dist,Cox_HIVEP3Dist,nrow=1)
+
+##CHRM2
+Roblab_CHRM2<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg07116919'),])
+Roblab_CHRM2<-m2beta(Roblab_CHRM2)
+colnames(Roblab_CHRM2)<-c("beta")
+
+Roblab_des_Clus<-as.data.frame(Roblab_des$Cluster)
+rownames(Roblab_des_Clus)<-rownames(Roblab_des)
+Roblab_CHRM2<-merge(Roblab_CHRM2,Roblab_des_Clus,by='row.names')
+Roblab_CHRM2$Row.names<-NULL
+colnames(Roblab_CHRM2)<-c("Beta","Cluster")
+
+Cox_CHRM2<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg07116919'),])
+Cox_CHRM2<-m2beta(Cox_CHRM2)
+colnames(Cox_CHRM2)<-c("beta")
+
+Cox_des_Clus<-as.data.frame(Cox_des$Cluster)
+rownames(Cox_des_Clus)<-rownames(Cox_des)
+Cox_CHRM2<-merge(Cox_CHRM2,Cox_des_Clus,by='row.names')
+Cox_CHRM2$Row.names<-NULL
+colnames(Cox_CHRM2)<-c("Beta","Cluster")
+
+##Joy Plot
+Roblab_CHRM2Dist<-ggplot(Roblab_CHRM2, aes(x = Beta, y = Cluster,fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+Cox_CHRM2Dist<-ggplot(Cox_CHRM2, aes(x = Beta, y = Cluster, fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+grid.arrange(Roblab_CHRM2Dist,Cox_CHRM2Dist,nrow=1)
+
+##MAF
+Roblab_MAF<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg09038266'),])
+Roblab_MAF<-m2beta(Roblab_MAF)
+colnames(Roblab_MAF)<-c("beta")
+
+Roblab_des_Clus<-as.data.frame(Roblab_des$Cluster)
+rownames(Roblab_des_Clus)<-rownames(Roblab_des)
+Roblab_MAF<-merge(Roblab_MAF,Roblab_des_Clus,by='row.names')
+Roblab_MAF$Row.names<-NULL
+colnames(Roblab_MAF)<-c("Beta","Cluster")
+
+Cox_MAF<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg09038266'),])
+Cox_MAF<-m2beta(Cox_MAF)
+colnames(Cox_MAF)<-c("beta")
+
+Cox_des_Clus<-as.data.frame(Cox_des$Cluster)
+rownames(Cox_des_Clus)<-rownames(Cox_des)
+Cox_MAF<-merge(Cox_MAF,Cox_des_Clus,by='row.names')
+Cox_MAF$Row.names<-NULL
+colnames(Cox_MAF)<-c("Beta","Cluster")
+
+##Joy Plot
+Roblab_MAFDist<-ggplot(Roblab_MAF, aes(x = Beta, y = Cluster,fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+Cox_MAFDist<-ggplot(Cox_MAF, aes(x = Beta, y = Cluster, fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+grid.arrange(Roblab_MAFDist,Cox_MAFDist,nrow=1)
+
+##CXCL9
+Roblab_CXCL9<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg04038163'),])
+Roblab_CXCL9<-m2beta(Roblab_CXCL9)
+colnames(Roblab_CXCL9)<-c("beta")
+
+Roblab_des_Clus<-as.data.frame(Roblab_des$Cluster)
+rownames(Roblab_des_Clus)<-rownames(Roblab_des)
+Roblab_CXCL9<-merge(Roblab_CXCL9,Roblab_des_Clus,by='row.names')
+Roblab_CXCL9$Row.names<-NULL
+colnames(Roblab_CXCL9)<-c("Beta","Cluster")
+
+Cox_CXCL9<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg04038163'),])
+Cox_CXCL9<-m2beta(Cox_CXCL9)
+colnames(Cox_CXCL9)<-c("beta")
+
+Cox_des_Clus<-as.data.frame(Cox_des$Cluster)
+rownames(Cox_des_Clus)<-rownames(Cox_des)
+Cox_CXCL9<-merge(Cox_CXCL9,Cox_des_Clus,by='row.names')
+Cox_CXCL9$Row.names<-NULL
+colnames(Cox_CXCL9)<-c("Beta","Cluster")
+
+##Joy Plot
+Roblab_CXCL9Dist<-ggplot(Roblab_CXCL9, aes(x = Beta, y = Cluster,fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+Cox_CXCL9Dist<-ggplot(Cox_CXCL9, aes(x = Beta, y = Cluster, fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+grid.arrange(Roblab_CXCL9Dist,Cox_CXCL9Dist,nrow=1)
+
+#U6atac
+Roblab_U6atac<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)=='cg21977522'),])
+Roblab_U6atac<-m2beta(Roblab_U6atac)
+colnames(Roblab_U6atac)<-c("beta")
+
+Roblab_des_Clus<-as.data.frame(Roblab_des$Cluster)
+rownames(Roblab_des_Clus)<-rownames(Roblab_des)
+Roblab_U6atac<-merge(Roblab_U6atac,Roblab_des_Clus,by='row.names')
+Roblab_U6atac$Row.names<-NULL
+colnames(Roblab_U6atac)<-c("Beta","Cluster")
+
+Cox_U6atac<-as.data.frame(Cox_Data[which(rownames(Cox_Data)=='cg21977522'),])
+Cox_U6atac<-m2beta(Cox_U6atac)
+colnames(Cox_U6atac)<-c("beta")
+
+Cox_des_Clus<-as.data.frame(Cox_des$Cluster)
+rownames(Cox_des_Clus)<-rownames(Cox_des)
+Cox_U6atac<-merge(Cox_U6atac,Cox_des_Clus,by='row.names')
+Cox_U6atac$Row.names<-NULL
+colnames(Cox_U6atac)<-c("Beta","Cluster")
+
+##Joy Plot
+Roblab_U6atacDist<-ggplot(Roblab_U6atac, aes(x = Beta, y = Cluster,fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +   # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+Cox_U6atacDist<-ggplot(Cox_U6atac, aes(x = Beta, y = Cluster, fill=Cluster)) +
+  geom_joy(scale = 4) + theme_joy() +
+  scale_y_discrete(expand = c(0.01, 0)) +   # will generally have to set the `expand` option
+  scale_x_continuous(expand = c(0, 0))  +  # for both axes to remove unneeded padding
+  scale_fill_cyclical(values = c("#696969","#02c0fa","#7fd071"),guide="legend") 
+
+grid.arrange(Roblab_U6atacDist,Cox_U6atacDist,nrow=1)
+
+##Plots for the final figure
+E1Clusters<-grid.arrange(Roblab_FN1Dist,Cox_FN1Dist,Roblab_PKM2Dist,Cox_PKM2Dist,Roblab_KRT15Dist,Cox_KRT15Dist,nrow=1)
+C2C3Clusters<-grid.arrange(Roblab_IL7Dist,Cox_IL7Dist,Roblab_MAFDist,Cox_MAFDist,Roblab_CXCL9Dist,Cox_CXCL9Dist, nrow=1)
+
+grid.arrange(E1Clusters,C2C3Clusters,nrow=2)
+```
+
+```{r PCA on these 6 sites,fig.height=18,fig.width=18}
+sites<-c("cg12436772","cg22234930","cg26625897","cg14556425","cg04038163","cg09038266")
+Roblab_6sites<-as.data.frame(Roblab_Data[which(rownames(Roblab_Data)%in% sites),])
+Cox_6sites<-as.data.frame(Cox_Data[which(rownames(Cox_Data)%in% sites),])
+
+##Roblab 6 sites
+Roblab_Data_t<-t(Roblab_6sites)
+Rob.pca <-prcomp(scale(m2beta(Roblab_Data_t), center = TRUE, scale = FALSE))
+summary(Rob.pca)
+
+scores = as.data.frame(Rob.pca$x)
+scores<-scores[order(rownames(scores)),]
+Roblab_des<-Roblab_des[order(rownames(Roblab_des)),]
+all(rownames(Roblab_des)==rownames(scores))##TRUE
+
+Path<-as.data.frame(Roblab_des$Cluster)
+rownames(Path)<-rownames(Roblab_des)
+all(rownames(Path)==rownames(scores))##TRUE
+scores<-merge(scores,Path,by='row.names')
+rownames(scores)<-scores$Row.names
+scores$Row.names<-NULL
+scores$Path<-scores$`Roblab_des$Cluster`
+scores$`Roblab_des$Cluster`<-NULL
+
+##Pathology colour
+(v.grp.col<-as.vector(scores$Path))
+(v.grp.col<-gsub("C3","#696969",v.grp.col))
+(v.grp.col<-gsub("E1","#7fd071",v.grp.col))
+(v.grp.col<-gsub("C2","#02c0fa",v.grp.col))
+v.grp.col
+
+# plot of observations
+Roblab_pca<-ggplot(data = scores, aes(x = PC1, y = PC2, label = rownames(scores))) +
+  geom_hline(yintercept = 0, colour = "gray65") +
+  geom_vline(xintercept = 0, colour = "gray65") +
+  geom_text(colour = v.grp.col) +
+  ggtitle("PCA plot of Discovery cohort samples")+
+  theme_bw()
+
+Roblab_pca
+
+##Cox
+Cox_Data_t<-t(Cox_6sites)
+Cox.pca <-prcomp(scale(m2beta(Cox_Data_t), center = TRUE, scale = FALSE))
+summary(Cox.pca)
+
+##Plot
+# create data frame with scores
+scores = as.data.frame(Cox.pca$x)
+scores<-scores[order(rownames(scores)),]
+Cox_des<-Cox_des[order(rownames(Cox_des)),]
+all(rownames(Cox_des)==rownames(scores))##TRUE
+
+Path<-as.data.frame(Cox_des$Cluster)
+rownames(Path)<-rownames(Cox_des)
+all(rownames(Path)==rownames(scores))##TRUE
+scores<-merge(scores,Path,by='row.names')
+rownames(scores)<-scores$Row.names
+scores$Row.names<-NULL
+scores$Path<-scores$`Cox_des$Cluster`
+scores$`Cox_des$Cluster`<-NULL
+
+##Pathology colour
+(Coxv.grp.col<-as.vector(scores$Path))
+(Coxv.grp.col<-gsub("C3","#696969",Coxv.grp.col))
+(Coxv.grp.col<-gsub("E1","#7fd071",Coxv.grp.col))
+(Coxv.grp.col<-gsub("C2","#02c0fa",Coxv.grp.col))
+Coxv.grp.col
+
+# plot of observations
+Cox_pca<-ggplot(data = scores, aes(x = PC1, y = PC2, label = rownames(scores))) +
+  geom_hline(yintercept = 0, colour = "gray65") +
+  geom_vline(xintercept = 0, colour = "gray65") +
+  geom_text(colour = Coxv.grp.col) +
+  ggtitle("PCA plot of Validation cohort samples")+
+  theme_bw()
+
+Cox_pca
+```
+

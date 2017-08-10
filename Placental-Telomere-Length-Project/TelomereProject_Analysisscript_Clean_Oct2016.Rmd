@@ -1,0 +1,1210 @@
+---
+output: 
+  html_document: 
+    keep_md: yes
+---
+Title Telomere Project Analysis_Cleaned Code
+========================================================
+
+```{r LOAD DATA AND PACKAGES,include=FALSE,results='hide'}
+#source("https://bioconductor.org/biocLite.R")
+#biocLite('reshape2')
+library(gplots)
+library(ggplot2)
+library(lumi)
+library(lattice)
+library("RColorBrewer")
+library(knitr)
+library(plyr)
+library(limma)
+library(gridExtra)
+library(multcomp)
+
+setwd('Z:/ROBLAB1 coredata-databases/1 Samantha DATA Folder/PROJECTS/TELOMERE_PLACENTA/Analysis')
+T.Dat<-read.table('All_Data.txt',header=T)
+rownames(T.Dat)<-T.Dat$Sample
+
+##What is in the Data Table:
+head(T.Dat)
+##Sample- Sample Name as per Robinson Lab nomenclature
+##Group- Pathology group: Control, early onset preeclampsia (EOPE), late-onset preeclampsia (LOPE), and intrauterine growth restriction (IUGR)
+##IUGR Status- whether the sample has defined IUGR as per the Canadian guidelines (Magee et al 2008). Yes or No
+##CHR_AB- chromosomal abnormality, does sample have known chromosomal abnormality. Yes or No.
+##TS- Telomere/Single Gene copy ratio as per Cawthon et al (2002) methods. This is essentially the measure for telomere length
+##SD- standard deviation between samples for the telomere length assay
+##CV- coefficient of variance between sample run for the telomere length assay
+##BW- Fetal birth weight, absolute value in grams
+##BW_SD- Fetal birth weight measured in standard deviation (SD) accounting for gestational age and fetal sex
+##GA- Gestational age (GA) at delivery
+##MA- Maternal age at delivery
+##Sex- Fetal Sex
+##TYPE- a different division for group, grouping only the sample by diseased and non-diseased. 
+```
+
+Dealing with missing clinical data:
+There are 26 missing birth weight values and 31 missing BW_SD, as some of the gestational ages are too low to calculate a SD. These cases were removed when fitting the model. I did not impute them as imputing would not take into account gestational age. 
+
+There were also  4 missing maternal ages. These were imputed, replacing the missing values with the median for maternal age.
+
+```{r IMPUTING MISSING VALUES,include=FALSE,results='hide'}
+##Impute the missing 4 maternal age values- using median
+impute.med <- function(x) replace(x, is.na(x), median(x, na.rm = TRUE))
+dat2 <- sapply(T.Dat, function(x){
+    if(is.numeric(x)){
+            impute.med(x)
+        } else {
+            x
+        }
+    }
+)
+
+T.Dat$MA<-impute.med(T.Dat$MA)
+##Souble check the structure of all variables within the design matrix
+str(T.Dat)
+#Souble check that there are no NA values after imputation
+sum(is.na(T.Dat$MA))
+```
+
+Format my colours: Assigning specific colours to my groups, fetal sex, and IUGR status
+This just comes in handy when plotting these clinical variables. I don't need to continuously define colours as I have done it in the beginning of the code.
+```{r GROUP COLOURS,include=FALSE,results='hide'}
+#Group
+(grp.col <- as.vector(T.Dat$GROUP))
+(grp.col <- gsub("LOPE", "lightsteelblue1", grp.col))
+(grp.col <- gsub("EOPE", "palegoldenrod", grp.col))
+(grp.col <- gsub("IUGR", "salmon", grp.col))
+(grp.col <- gsub("CONTROL", "antiquewhite3", grp.col))
+grp.col
+
+##Sex
+(sex.col<- as.vector(T.Dat$SEX))
+(sex.col <- gsub("FEMALE", "salmon", sex.col))
+(sex.col <- gsub("MALE","antiquewhite", sex.col))
+sex.col
+
+##IUGR Status
+IUGR.col<-as.vector(T.Dat$IUGR)
+IUGR.col<-gsub("YES","thistle4",IUGR.col)
+IUGR.col<-gsub("NO","steelblue",IUGR.col)
+IUGR.col
+```
+
+**Start of Analysis**
+
+Question 1: Are any of our confounding factors associated with telomere length?
+For this question I use only the control live born samples, as I want to know if there is an association within a normal population.
+```{r CONFOUNDING FACTORS ASSOCIATED WITH TL, fig.height=12,fig.width=12}
+CON<-T.Dat[which(T.Dat$GROUP=="CONTROL" & T.Dat$GA>24),]
+
+##Maternal age (MA) vs TL
+##Makes the plot- later displayed with all other plots
+MA.TL<-ggplot(CON, aes(x = MA, y = TS)) +
+ geom_point() +
+ stat_smooth(method="lm",se=T) +
+ theme_grey() + 
+   xlab("Maternal Age (years)") + 
+   ylab("T/S Ratio") + 
+   ggtitle("Change in Placental Telomere Length with Maternal Age ")
+
+##Checking if there is a significant association between TL and MA. Does MA need to be included in our final model?
+##Linear regression to determine if TL and MA are significantly associated
+model_MA_effect<-lm(TS~MA, data = CON)
+summary(model_MA_effect)##R=-0.0013, p=0.92
+##Maternal age is not significantly associated with telomere length
+
+##Fetal Birth weight measured in standard deviation (BW_SD) vs TL
+BW.TL<-ggplot(CON, aes(x = BW_SD, y = TS)) +
+ geom_point() +
+ stat_smooth(method="lm",se=T) +
+ theme_grey() + 
+   xlab("Fetal Birth Weight (SD)") + 
+   ylab("T/S Ratio") + 
+   ggtitle("Change in Placental Telomere Length with Fetal Birth Weight (SD)")
+
+##Checking if there is a significant association between TL and BW_SD. Does BW_SD need to be included in our final model?
+##Linear regression to determine if TL and BW_SD are significantly associated
+model_BW_SD_effect<-lm(TS~BW_SD, data = CON)
+summary(model_BW_SD_effect)##-0.077, p=0.36
+##Birth weight is not significantly associated with telomere length
+
+##Gestational age (GA) vs TL
+GA.TL<-ggplot(CON, aes(x = GA, y = TS)) +
+ geom_point() +
+ stat_smooth(method="lm",se=T) +
+ theme_grey() + 
+   xlab("Gestational age (weeks)") + 
+   ylab("T/S Ratio") + 
+   ggtitle("Change in Placental Telomere Length with Gestational Age")
+
+##Checking if there is a significant association between TL and GA. Does GA need to be included in our final model?
+##Linear regression to determine if TL and GA are significantly associated
+model_GA_effect<-lm(TS~GA, data = CON)
+summary(model_GA_effect)##-0.041 p=0.019
+##GA is  significantly associated with telomere length
+
+##Fetal Sex vs. TL
+##Check to see if TS ratio is significantly different between males and females
+Fe<-subset(CON,SEX=="FEMALE")
+rownames(Fe)<-Fe$Sample
+Fe<-Fe[,5]
+
+Male<-subset(CON,SEX=="MALE")
+rownames(Male)<-Male$Sample
+Male<-Male[,5]
+
+t.test(Male,Fe)##p=0.0037
+##Significant difference
+
+##But is Fetal sex singificantly different when we account for gestational age?
+SexvTS<- ggplot(CON, aes(SEX, TS)) + 
+   geom_boxplot()+scale_fill_manual(values=unique(sex.col))+
+  guides(fill=FALSE)+
+   theme_grey() + 
+   xlab("Fetal Sex") + 
+   ylab("T/S Ratio") + 
+   ggtitle("Change in Placental Telomere Length with Fetal Sex")
+
+##Checking if there is a significant association between TL and Fetal Sex. Does Fetal Sex need to be included in our final model?
+##Linear regression to determine if TL differs between sex taking into account gestational age
+model_GA_effect<-lm(TS~SEX+GA, data = CON)
+summary(model_GA_effect)##r=-0.43, p=0.001
+##Fetal sex is significantly associated with telomere length, even when you take into account GA
+
+##Putting all graphs in one fig
+grid.arrange(MA.TL,GA.TL,BW.TL,SexvTS,ncol=2)
+```
+
+One question the comes out of question 1 is whether gestational age at delivery differs between males and female fetuses?
+```{r GA differ between M and Fe, warning=TRUE,fig.height=12,fig.width=12}
+##Fetal Sex vs. TL
+(SexvGA<- ggplot(T.Dat, aes(SEX, GA,fill=SEX)) + 
+   geom_boxplot()+scale_fill_manual(values=unique(sex.col)))+
+   theme_grey() + 
+   xlab("Fetal Sex") + 
+   ylab("Gestational Age (weeks)") + 
+   ggtitle("Difference in Gestational Age at Delivery with Fetal Sex")
+
+##Check to see is gestational age is significantly different between males and females
+Fe<-subset(T.Dat,SEX=="FEMALE")
+rownames(Fe)<-Fe$Sample
+Fe<-Fe[,10]
+
+Male<-subset(T.Dat,SEX=="MALE")
+rownames(Male)<-Male$Sample
+Male<-Male[,10]
+
+t.test(Male,Fe)
+##No significant difference
+
+##Taking into account gestational age, do we still see a difference in TL between male and female fetuses using all the controls across gestationa age, not just the live born?
+ALL.CON<-T.Dat[which(T.Dat$GROUP=="CONTROL"),]
+ggplot(ALL.CON, aes(x = GA, y = TS,color=SEX,shape=SEX)) +
+geom_point() + scale_color_manual(values = c("FEMALE" = 'black','MALE' = 'grey')) + 
+scale_shape_manual(values = c('FEMALE' = 15, 'MALE' = 14))+
+ stat_smooth(method="lm",se=F) +
+ theme_bw() + 
+   xlab("Gestational age (weeks)") + 
+   ylab("T/S Ratio") + 
+   ggtitle("Change in Telomere Length Over Gestation")
+
+##Checking to see if the TL distributiuons are significantly different
+Fe<-subset(T.Dat,SEX=="FEMALE")
+rownames(Fe)<-Fe$Sample
+Fe<-Fe[,5]
+
+Male<-subset(T.Dat,SEX=="MALE")
+rownames(Male)<-Male$Sample
+Male<-Male[,5]
+
+ks_test2<-ks.test(Fe,Male, alternative=c("two.sided"),exact=T)
+print(ks_test2)
+##Significantly Different
+
+##Comparing the linear regression lines between male and females
+Fe<-subset(T.Dat,SEX=="FEMALE" & GROUP=="CONTROL")
+rownames(Fe)<-Fe$Sample
+model_Fe<-lm(TS~GA, data = Fe)##Sex not in model as this is being done seperately
+summary(model_Fe)##GA, p=0.09
+
+Male<-subset(T.Dat,SEX=="MALE"& GROUP=="CONTROL")
+rownames(Male)<-Male$Sample
+model_M<-lm(TS~GA, data = Male)##Sex not in model as this is being done seperately
+summary(model_M)##GA, p=1.6e-05
+
+##are these linear regression models significantly different
+s1 <- summary(model_Fe)$coefficients 
+s2 <- summary(model_M)$coefficients 
+db <- (s2[2,1]-s1[2,1]) 
+sd <- sqrt(s2[2,2]^2+s1[2,2]^2) 
+df <- (model_Fe$df.residual+model_M$df.residual) 
+td <- db/sd 
+2*pt(-abs(td), df) 
+##p=0.12 trend that the male and female controls have significantly different rates of TL decline
+```
+
+
+Question 2:
+Does telomere legnth differ between EOPE,LOPE, and IUGR compared to controls? What about between one another?
+```{r TL BETWEEN PATHOLOGY GROUPS, fig.height=12,fig.width=12}
+##Removing the non-viable control samples, those <24wks
+rm<-T.Dat[which(T.Dat$GROUP=="CONTROL" & T.Dat$GA<24),]
+T.Dat<-T.Dat[-which(rownames(T.Dat) %in% rownames(rm)),]
+
+##This leaves us with a sample set of:
+print(table(T.Dat$GROUP))##59 controls
+
+##Plot Telomere length between Groups
+(GRPvTS<- ggplot(T.Dat, aes(GROUP, TS)) + 
+   geom_boxplot()+scale_fill_manual(values=unique(grp.col)))+
+   theme_grey() + 
+   xlab("Group") + 
+   ylab("T/S Ratio") + 
+   ggtitle("Change in Telomere Length with Group")
+
+
+TL_Model<-lm(TS~GROUP+SEX+GA, data = T.Dat)
+summary(TL_Model)
+
+##ANOVA is used to compare telomere length between all of our pathology groups
+amod <- aov(TS~GROUP+SEX+GA, data = T.Dat)
+cht <- glht(amod, linfct = mcp(GROUP = "Tukey"))
+
+summary(cht, test = univariate())
+##No significant difference in TL between pathology and controls, although a significant difference in TL between EOPE and LOPE
+```
+
+
+Question 4.Is TL associated with genome wide changes in DNAm?
+##I am loading in already pre-processed data from another project looking at changes in DNAm in EOPE,LOPE, and IUGR and assessing the relationship between these pathologies. The scripts for the preprocessing will be uploaded seperately.
+```{r Extra packages,include=FALSE,results='hide'}
+#source("https://bioconductor.org/biocLite.R")
+#biocLite('cluster')
+library(limma)
+library(lattice)
+library(scales)
+library(ggplot2)
+library(reshape)
+library(knitr)
+library(rmarkdown)
+library(plyr)
+library(lumi)
+library(Biostrings)
+library(MASS)
+library(GenomicRanges)
+library(GenomicFeatures)
+library(methylumi)
+library('Hmisc')
+```
+
+```{r IS TL ASSOCIATED WITH DNAm GLOBAL APPROACH, fig.height=12,fig.width=12}
+load('AnalysisReadyData.RData')
+
+##Make new project containing only the samples for which telomere length was measured
+PROJECT<-Data[, which(colnames(Data)  %in% rownames(T.Dat))]
+dim(PROJECT)##58 samples
+colnames(PROJECT)  %in% rownames(T.Dat)
+Des<-T.Dat[which(rownames(T.Dat) %in% colnames(Data)),]
+Des$Sample<-droplevels(Des$Sample)
+
+##Ordering the Project (DNAm data) in the same order as the meta data
+PROJECT <- PROJECT[,order(colnames(PROJECT))]
+Des<-Des[order(rownames(Des)),]
+rownames(Des)==colnames(PROJECT)
+dim(PROJECT)
+
+##save PROJECT
+##save(PROJECT,file="PROJECT.Telomere.Final.DNAm_Data.RData")
+```
+  
+Question 3. Do we see changes in DNAm specifically at TERC,TERT,DNMTs or TERRA associated with telomere length?
+Not correcting for group as if was not significantly different in our data
+```{r TARGETED APPRAOCH TERT,TERC,DNMTs, fig.height=12, fig.width=12}
+##TERF2
+load('FeatureData.RData')##This is an annotation for Price et al 2013
+
+
+##TERC- Pulling all probes that are annotated to the TERC gene
+TERCprobes<-fData[which(fData$Closest_TSS_gene_name=="TERC"),]##15probes
+TERC.PROJECT<-PROJECT[which(rownames(PROJECT) %in% rownames(TERCprobes)),]
+dim(TERC.PROJECT)##15 probes by 58 samples
+  
+##Linear model looking for associated between DNAm within TERC and TL
+DesMat.TERC<- model.matrix(~TS+GA+SEX,Des)
+
+##Pull out m-values
+mDat.TERC<-TERC.PROJECT
+str(mDat.TERC)
+Fit.TERC<- lmFit(mDat.TERC, DesMat.TERC)
+EbFit.TERC <- eBayes(Fit.TERC)
+print(topTable(EbFit.TERC,coef="TS"))
+## No significant association
+
+##TERT- Pulling all probes that are annotated to the TERT gene
+TERTprobes<-fData[which(fData$Closest_TSS_gene_name=="TERT"),]##99probes
+TERT.PROJECT<-PROJECT[which(rownames(PROJECT) %in% rownames(TERTprobes)),]
+dim(TERT.PROJECT)##99 probes by 58 samples
+  
+##Linear model looking for associated between DNAm within TERT and TL
+DesMat.TERT<- model.matrix(~TS+GA+SEX,Des)
+
+##Pull out m-values
+mDat.TERT<-TERT.PROJECT
+Fit.TERT<- lmFit(mDat.TERT, DesMat.TERT)
+EbFit.TERT <- eBayes(Fit.TERT)
+tt_TERT<-topTable(EbFit.TERT,coef="TS",n=99)
+print(head(tt_TERT))
+##significant association top 16 probes
+
+##Saving this information to construct figure 4 of the paper
+##write.table(tt_TERT,file="TERT_pvals.txt")
+##Run the beta values through the model to look at the magnitude of change in DNAm
+TERT.PROJECT.betas<-m2beta(TERT.PROJECT)
+Fit.TERT<- lmFit(TERT.PROJECT.betas, DesMat.TERT)
+EbFit.TERT <- eBayes(Fit.TERT)
+tt_TERT_betas<-topTable(EbFit.TERT,coef="TS",n=99)
+head(tt_TERT_betas)
+
+MAP<-TERTprobes[,c("MAPINF0-1")]
+tt_TERT_betas<-cbind(tt_TERT_betas,MAP)
+##write.table(tt_TERT_betas,file="tt_TERT_betas.txt")
+
+##DNMT1
+DNMT1probes<-fData[which(fData$Closest_TSS_gene_name=="DNMT1"),]##19probes
+DNMT1.PROJECT<-PROJECT[which(rownames(PROJECT) %in% rownames(DNMT1probes)),]
+dim(DNMT1.PROJECT)##19 probes by 58 samples
+  
+##Linear model looking for associated between DNAm within DNMT1 and TL
+DesMat.DNMT1<- model.matrix(~TS+GA+SEX,Des)
+
+##Pull out m-values
+mDat.DNMT1<-DNMT1.PROJECT
+Fit.DNMT1<- lmFit(mDat.DNMT1, DesMat.DNMT1)
+EbFit.DNMT1 <- eBayes(Fit.DNMT1)
+topTable(EbFit.DNMT1,coef="TS",n=20)
+##significant association in top 2 probes
+
+DNMT1.PROJECT.betas<-m2beta(DNMT1.PROJECT)
+Fit.DNMT1<- lmFit(DNMT1.PROJECT.betas, DesMat.DNMT1)
+EbFit.DNMT1 <- eBayes(Fit.DNMT1)
+tt_DNMT1_betas<-topTable(EbFit.DNMT1,coef="TS",n=19)
+print(head(tt_DNMT1_betas))
+
+MAP<-DNMT1probes[,c("MAPINF0-1")]
+tt_DNMT1_betas<-cbind(tt_DNMT1_betas,MAP)
+##write.table(tt_DNMT1_betas,file="tt_DNMT1_betas.txt")
+
+##DNMT3a
+DNMT3Aprobes<-fData[which(fData$Closest_TSS_gene_name=="DNMT3A"),]##88probes
+DNMT3A.PROJECT<-PROJECT[which(rownames(PROJECT) %in% rownames(DNMT3Aprobes)),]
+dim(DNMT3A.PROJECT)##88 probes by 58 samples
+  
+##Linear model looking for associated between DNAm within DNMT3a and TL
+DesMat.DNMT3A<- model.matrix(~TS+GA+SEX,Des)
+
+##Pull out m-values
+mDat.DNMT3A<-DNMT3A.PROJECT
+Fit.DNMT3A<- lmFit(mDat.DNMT3A, DesMat.DNMT3A)
+EbFit.DNMT3A <- eBayes(Fit.DNMT3A)
+topTable(EbFit.DNMT3A,coef="TS",n=20)
+##significant association in top 2 probes
+
+DNMT3A.PROJECT.betas<-m2beta(DNMT3A.PROJECT)
+Fit.DNMT3A<- lmFit(DNMT3A.PROJECT.betas, DesMat.DNMT3A)
+EbFit.DNMT3A<- eBayes(Fit.DNMT3A)
+tt_DNMT3A_betas<-topTable(EbFit.DNMT3A,coef="TS",n=88)
+print(head(tt_DNMT3A_betas))
+
+MAP<-DNMT3Aprobes[,c("MAPINF0-1")]
+tt_DNMT3A_betas<-cbind(tt_DNMT3A_betas,MAP)
+##write.table(tt_DNMT3A_betas,file="tt_DNMT3A_betas.txt")
+
+##DNMT3b
+DNMT3Bprobes<-fData[which(fData$Closest_TSS_gene_name=="DNMT3B"),]##21probes
+DNMT3B.PROJECT<-PROJECT[which(rownames(PROJECT) %in% rownames(DNMT3Bprobes)),]
+dim(DNMT3B.PROJECT)##21 probes by 58 samples
+  
+##Linear model looking for associated between DNAm within DNMT3b and TL
+DesMat.DNMT3B<- model.matrix(~TS+GA+SEX,Des)
+
+##Pull out m-values
+mDat.DNMT3B<-DNMT3B.PROJECT
+Fit.DNMT3B<- lmFit(mDat.DNMT3B, DesMat.DNMT3B)
+EbFit.DNMT3B <- eBayes(Fit.DNMT3B)
+topTable(EbFit.DNMT3B,coef="TS",n=20)
+##No association
+
+##DNMT3L
+DNMT3Lprobes<-fData[which(fData$Closest_TSS_gene_name=="DNMT3L"),]##11probes
+DNMT3L.PROJECT<-PROJECT[which(rownames(PROJECT) %in% rownames(DNMT3Lprobes)),]
+dim(DNMT3L.PROJECT)##11 probes by 58 samples
+  
+##Linear model looking for associated between DNAm within DNMT3L and TL
+DesMat.DNMT3L<- model.matrix(~TS+GA+SEX,Des)
+
+##Pull out m-values
+mDat.DNMT3L<-DNMT3L.PROJECT
+Fit.DNMT3L<- lmFit(mDat.DNMT3L, DesMat.DNMT3L)
+EbFit.DNMT3L <- eBayes(Fit.DNMT3L)
+topTable(EbFit.DNMT3L,coef="TS",n=20)
+##No association
+```
+
+###Plot out changes in TERT
+```{r TERT DNAm correlation, fig.height=12, fig.width=12}
+(dsHits <- topTable(EbFit.TERT,n=16,
+                    coef = grep("TS", colnames(coef(EbFit.TERT)))))
+
+interest<-dsHits[c(1:16),]
+
+fData_interest<-merge(fData,interest,by='row.names')
+
+##subset prDat with these significant hits
+interest_dat<-PROJECT[c('cg01934390','cg08934976','cg10878976','cg07728485','cg11832804','cg08295072','cg19977628','cg13390570','cg04021502','cg14793430','cg25939350','cg06674436','cg12324353','cg21612170','cg15927295','cg27619457'),]
+
+##Restructure data
+interest_dat<-as.data.frame(t(interest_dat))
+interest_dat<-merge(interest_dat,Des,by ='row.names')
+
+##Do these sites correlate?
+  ##order by map info
+topTERT<-fData_interest[order(fData_interest$MAPINF0-1),] 
+rownames(topTERT)<-topTERT$Row.names
+topTERT$Row.names<-as.factor(topTERT$Row.names)
+
+  ##subset significant hits from project (DNAm data)
+TERT.PROJECT<-as.data.frame(TERT.PROJECT)
+topTERT.PROJECT<-TERT.PROJECT[which(rownames(TERT.PROJECT) %in% rownames(topTERT)),]
+
+topTERT.betas<-m2beta(topTERT.PROJECT)
+topTERT.betas<-as.data.frame(topTERT.betas)
+
+##Make sure the betas are in the same map order
+MapInfo<-topTERT$MAPINF0-1
+MapInfo<-as.data.frame(MapInfo)
+rownames(MapInfo)<-rownames(topTERT)
+
+topTERT.betas_ordered<-merge(topTERT.betas,MapInfo,by='row.names')
+topTERT.betas_ordered<-topTERT.betas_ordered[order(topTERT.betas_ordered$MapInfo),]
+rownames(topTERT.betas_ordered)<-topTERT.betas_ordered$Row.names
+rownames(topTERT.betas_ordered)==rownames(topTERT)
+
+topTERT.betas_ordered$Row.names<-NULL
+topTERT.betas_ordered$MapInfo<-NULL
+#write.table(topTERT.betas_ordered, file="topTERT.betas.txt")
+
+##Correlation plot
+ID<-t(topTERT.betas_ordered)
+panel.lm<-function (x, y, col = par("col"), bg = NA, pch = par("pch"),
+     cex = 1, col.lm = "red", lwd=par("lwd"), ...)
+ {
+     points(x, y, pch = 16, col="black", bg = bg, cex = cex)
+     ok <- is.finite(x) & is.finite(y)
+     if (any(ok))
+         abline(lm(y[ok]~x[ok]), col = col.lm, ...)}
+
+ panel.sse<- function(y, x, digits=2,...)
+      {
+         usr <- par("usr"); on.exit(par(usr))
+         par(usr = c(0, 1, 0, 1))
+
+         model <- summary(lm(y~x))
+                              r <- cor(x,y,method="spearman", use="pairwise.complete.obs")
+                              p <- cor.test(x,y,method="spearman",alternative="two.sided",conf.level=0.95)
+                              p <- p$p.value
+         txt <- round(r, digits)
+         txt <- bquote(r == .(txt))
+		cex.cor<-0.8/strwidth(txt)
+         text(0.5, 0.7, txt, cex=1.0)
+         txt <- round(p, digits)
+         txt <- bquote(p == .(txt))
+         text(0.5, 0.3, txt, cex=1.0)
+}
+     
+pairs(ID[,c(1:16)],main="TERT",lower.panel=panel.sse,upper.panel=panel.lm)
+##It looks like all significant probes, spanning the whole gene correlate- therefore if this is included in a model I will average across the region (16 hits)
+
+##How many of these hits meet a minimum change in DNAm >0.05
+##Setting the FDR
+cutoff.p = 0.05  # FDR threshold
+hits_FDR = rownames(dsHits)[dsHits$adj.P.Val < cutoff.p]
+
+##Pulling out change in DNAm
+PROJECT_Beta<-m2beta(TERT.PROJECT)
+
+fit_beta = lmFit(PROJECT_Beta,DesMat.TERT)
+Ebfit_beta = eBayes(fit_beta)
+ttbeta_all = topTable(Ebfit_beta, n = Inf)
+
+##Setting delta beta threshold
+thresh = 0.05  # delta beta threshold
+delta_beta= rownames(ttbeta_all)[abs(ttbeta_all$TS) > thresh]
+
+##Where do all these hits intersect?
+delta_beta_intercept= intersect(delta_beta,hits_FDR)
+print(delta_beta_intercept)
+##This leaves us with 2 hits cg01934390,cg11832804
+
+##Subset out all our hits from ttbeta_all
+head(ttbeta_all)
+hits<-c('cg01934390','cg11832804')
+Our_hits<-ttbeta_all[which(rownames(ttbeta_all) %in% hits),]
+print(Our_hits)
+
+##
+TopTERT_2<-topTERT.betas_ordered[c('cg01934390','cg11832804'),]
+ID<-t(TopTERT_2)
+pairs(ID[,c(1:2)],main="TERT",lower.panel=panel.sse,upper.panel=panel.lm)
+##These hits correlate with each other
+```
+
+```{r TERT PLOTS, fig.height=12, fig.width=12}
+##Subset columns of interest (GROUP,TS,m val,SEX,GA)
+cg01934390<-subset(interest_dat[,c(2,19,22,27,29)])
+
+##calculate beta values
+cg01934390$beta<-m2beta(cg01934390$cg01934390)
+
+##Plot the hit CpGs
+##cg19977628
+TERT1<-ggplot(cg01934390,aes(TS,beta))+
+  ylim(0,1.0)+
+  geom_point()+
+  stat_smooth(method="lm",se=T)+
+  xlab("T/S Ratio") + 
+   ylab("DNA methylation (Beta value)") + 
+   ggtitle("Correlation between DNAm and T/S ratio at cg01934390-TERT, site 1")
+##0.053 change with every 1 point change in TL p=0.003 (p-value from the m-values run in limma)
+
+##Subset columns of interest (GROUP,TS,m val,SEX,GA)
+cg11832804<-subset(interest_dat[,c(6,19,22,27,29)])
+
+##calculate beta values
+cg11832804$beta<-m2beta(cg11832804$cg11832804)
+
+##Plot the hit CpGs
+##cg01934390
+TERT2<-ggplot(cg11832804,aes(TS,beta))+
+  ylim(0,1.0)+
+  geom_point()+
+  stat_smooth(method="lm",se=T)+
+  xlab("T/S Ratio") + 
+   ylab("DNA methylation (Beta value)") + 
+   ggtitle("Correlation between DNAm and T/S ratio at cg11832804-TERT, site 2")
+##0.052 change with every 1 point change in TL p=0.01
+
+grid.arrange(TERT1,TERT2,ncol=2)
+
+## Do we see differences between EOPE, LOPE, IUGR and controls at these sites?
+TERT1_BOXPLOT<-ggplot(cg01934390, aes(x=GROUP, y=beta)) + geom_boxplot() +
+    guides(fill=FALSE)+ylim(0.2,1)
+
+TERT2_BOXPLOT<-ggplot(cg11832804, aes(x=GROUP, y=beta)) + geom_boxplot() +
+    guides(fill=FALSE)+ylim(0.2,1)
+
+grid.arrange(TERT1_BOXPLOT,TERT2_BOXPLOT, nrow=1)
+
+TERThits<-TERT.PROJECT[c('cg01934390','cg11832804'),]
+TERThits<-t(TERThits)
+TERThits<-as.data.frame(TERThits)
+
+TERThits_Dat<-merge(TERThits,T.Dat,by='row.names')
+
+library(multcomp)
+##ANOVA to compare DNAm at cg01934390 between pathology
+amod <- aov(cg01934390~GROUP+SEX+GA, data = TERThits_Dat)
+cht <- glht(amod, linfct = mcp(GROUP = "Tukey"))
+
+summary(cht, test = univariate())
+## DNAm at this iste is significantly different between EOPE and control, and LOPE and EOPE
+
+##ANOVA to compare DNAm at cg11832804 between pathology
+amod <- aov(cg11832804~GROUP+SEX+GA, data = TERThits_Dat)
+cht <- glht(amod, linfct = mcp(GROUP = "Tukey"))
+
+summary(cht, test = univariate())
+```
+
+###Plot out changes in DNMT1
+```{r PLOTTING DNMT1 hits correlation, fig.height=12, fig.width=12}
+(dsHits <- topTable(EbFit.DNMT1,n=12,
+                    coef = grep("TS", colnames(coef(EbFit.DNMT1)))))
+
+print(dsHits)
+
+interest<-dsHits[c(1:2),]
+
+fData_interest<-merge(fData,interest,by='row.names')
+
+##subset prDat with these hits
+interest_dat<-PROJECT[c('cg07627628','cg26538782'),]
+
+##Restructure data
+interest_dat<-as.data.frame(t(interest_dat))
+interest_dat<-merge(interest_dat,Des,by ='row.names')
+
+##Do these sites correlate?
+  ##order by map info
+topDNMT1<-fData_interest[order(fData_interest$MAPINF0-1),] 
+rownames(topDNMT1)<-topDNMT1$Row.names
+
+  ##subset from project
+DNMT1.PROJECT<-as.data.frame(DNMT1.PROJECT)
+topDNMT1.PROJECT<-DNMT1.PROJECT[which(rownames(DNMT1.PROJECT) %in% rownames(topDNMT1)),]
+
+topDNMT1.betas<-m2beta(topDNMT1.PROJECT)
+topDNMT1.betas<-as.data.frame(topDNMT1.betas)
+
+##Make sure the betas are in the same map order
+MapInfo<-topDNMT1$MAPINF0-1
+MapInfo<-as.data.frame(MapInfo)
+rownames(MapInfo)<-rownames(topDNMT1)
+
+topDNMT1.betas_ordered<-merge(topDNMT1.betas,MapInfo,by='row.names')
+topDNMT1.betas_ordered<-topDNMT1.betas_ordered[order(topDNMT1.betas_ordered$MapInfo),]
+rownames(topDNMT1.betas_ordered)<-topDNMT1.betas_ordered$Row.names
+rownames(topDNMT1.betas_ordered)==rownames(topDNMT1)
+
+topDNMT1.betas_ordered$Row.names<-NULL
+topDNMT1.betas_ordered$MapInfo<-NULL
+#write.table(topDNMT1.betas_ordered, file="topDNMT1.betas.txt")
+
+ID<-t(topDNMT1.betas_ordered)
+pairs(ID[,c(1:2)],main="DNMT1",lower.panel=panel.sse,upper.panel=panel.lm)
+#These sites correlate with each other
+
+##How many of these hits meet a minimum change in DNAm >0.05
+##Setting the FDR
+cutoff.p = 0.05  # FDR threshold
+hits_FDR = rownames(dsHits)[dsHits$adj.P.Val < cutoff.p]
+
+##Pulling out change in DNAm
+PROJECT_Beta<-m2beta(DNMT1.PROJECT)
+
+fit_beta = lmFit(PROJECT_Beta,DesMat.DNMT1)
+Ebfit_beta = eBayes(fit_beta)
+ttbeta_all = topTable(Ebfit_beta, n = Inf)
+
+##Setting delta beta threshold
+thresh = 0.02  # delta beta threshold- I used lower threshold as no sites met 0.05
+delta_beta= rownames(ttbeta_all)[abs(ttbeta_all$TS) > thresh]
+
+##Where do all these hits intersect?
+delta_beta_intercept= intersect(delta_beta,hits_FDR)
+print(delta_beta_intercept)
+##This leaves us with 2 hits cg07627628,cg26538782- just under the DB>0.04, with 0.043,and 0.042
+
+##Subset out all our hits from ttbeta_all
+hits<-c('cg07627628','cg26538782')
+Our_hits<-ttbeta_all[which(rownames(ttbeta_all) %in% hits),]
+print(Our_hits)
+```
+
+```{r Plotting DNMT1-2, fig.height=12, fig.width=12}
+##Subset columns of interest (GROUP,TS,m val,SEX,GA)
+cg07627628<-subset(interest_dat[,c(2,5,8,13,15)])
+
+##calculate beta values
+cg07627628$beta<-m2beta(cg07627628$cg07627628)
+
+##Plot the hit CpGs
+##cg19977628
+DNMT1_1<-ggplot(cg07627628,aes(TS,beta))+
+  ylim(0,1.0)+
+  geom_point()+
+  stat_smooth(method="lm",se=T)+
+  xlab("T/S Ratio") + 
+   ylab("DNA methylation (Beta value)") + 
+   ggtitle("Correlation between DNAm and T/S ratio at cg07627628-DNMT1, site 1")
+##0.043 change with every 1 point change in TL p=0.007
+
+##Subset columns of interest (GROUP,TS,m val,SEX,GA)
+cg26538782<-subset(interest_dat[,c(3,5,8,13,15)])
+
+##calculate beta values
+cg26538782$beta<-m2beta(cg26538782$cg26538782)
+
+##Plot the hit CpGs
+##cg26538782
+DNMT1_2<-ggplot(cg26538782,aes(TS,beta))+
+  ylim(0,1.0)+
+  geom_point()+
+  stat_smooth(method="lm",se=T)+
+  xlab("T/S Ratio") + 
+   ylab("DNA methylation (Beta value)") + 
+   ggtitle("Correlation between DNAm and T/S ratio at cg26538782-DNMT1, site 2")
+##0.044 change with every 1 point change in TL p=0.03
+
+grid.arrange(DNMT1_1,DNMT1_2,ncol=2)
+
+## Do we see differences between EOPE, LOPE, IUGR and controls at these sites?
+DNMT11_BOXPLOT<-ggplot(cg07627628, aes(x=GROUP, y=beta)) + geom_boxplot() +
+    guides(fill=FALSE)+ylim(0.2,1)
+
+DNMT12_BOXPLOT<-ggplot(cg26538782, aes(x=GROUP, y=beta)) + geom_boxplot() +
+    guides(fill=FALSE)+ylim(0.2,1)
+
+grid.arrange(DNMT11_BOXPLOT,DNMT12_BOXPLOT, nrow=1)
+
+DNMT1hits<-DNMT1.PROJECT[c('cg07627628','cg26538782'),]
+DNMT1hits<-t(DNMT1hits)
+DNMT1hits<-as.data.frame(DNMT1hits)
+
+DNMT1hits_Dat<-merge(DNMT1hits,T.Dat,by='row.names')
+
+##ANOVA to compare DNAm at cg07627628 between pathology
+amod <- aov(cg07627628~GROUP+SEX+GA, data = DNMT1hits_Dat)
+cht <- glht(amod, linfct = mcp(GROUP = "Tukey"))
+
+summary(cht, test = univariate())
+##DNAm at this site is significantly different between EOPE,IUGR and LOPE and contols
+
+##ANOVA to compare DNAm at cg11832804 between pathology
+amod <- aov(cg26538782~GROUP+SEX+GA, data = DNMT1hits_Dat)
+cht <- glht(amod, linfct = mcp(GROUP = "Tukey"))
+
+summary(cht, test = univariate())
+##Not significantly different
+```
+
+###Plot out changes in DNMT3A
+```{r Plotting DNMT3A Correlation}
+(dsHits <- topTable(EbFit.DNMT3A,n=12,
+                    coef = grep("TS", colnames(coef(EbFit.DNMT3A)))))
+
+print(dsHits)
+
+interest<-dsHits[c(1:2),]
+
+fData_interest<-merge(fData,interest,by='row.names')
+
+##subset prDat with these hits
+interest_dat<-PROJECT[c('cg11779362','cg08485187'),]
+
+##Restructure data
+interest_dat<-as.data.frame(t(interest_dat))
+interest_dat<-merge(interest_dat,Des,by ='row.names')
+
+##Do these sites correlate?
+  ##order by map info
+topDNMT3A<-fData_interest[order(fData_interest$MAPINF0-1),] 
+rownames(topDNMT3A)<-topDNMT3A$Row.names
+
+  ##subset from project
+DNMT3A.PROJECT<-as.data.frame(DNMT3A.PROJECT)
+topDNMT3A.PROJECT<-DNMT3A.PROJECT[which(rownames(DNMT3A.PROJECT) %in% rownames(topDNMT3A)),]
+
+topDNMT3A.betas<-m2beta(topDNMT3A.PROJECT)
+topDNMT3A.betas<-as.data.frame(topDNMT3A.betas)
+
+##Make sure the betas are in the same map order
+MapInfo<-topDNMT3A$MAPINF0-1
+MapInfo<-as.data.frame(MapInfo)
+rownames(MapInfo)<-rownames(topDNMT3A)
+
+topDNMT3A.betas_ordered<-merge(topDNMT3A.betas,MapInfo,by='row.names')
+topDNMT3A.betas_ordered<-topDNMT3A.betas_ordered[order(topDNMT3A.betas_ordered$MapInfo),]
+rownames(topDNMT3A.betas_ordered)<-topDNMT3A.betas_ordered$Row.names
+rownames(topDNMT3A.betas_ordered)==rownames(topDNMT3A)
+
+topDNMT3A.betas_ordered$Row.names<-NULL
+topDNMT3A.betas_ordered$MapInfo<-NULL
+#write.table(topDNMT3A.betas_ordered, file="topDNMT3A.betas.txt")
+
+ID<-t(topDNMT3A.betas_ordered)
+pairs(ID[,c(1:2)],main="DNMT3A",lower.panel=panel.sse,upper.panel=panel.lm)
+##These sites correlate with one another
+
+##How many of these hits meet a minimum change in DNAm >0.05
+##Setting the FDR
+cutoff.p = 0.05  # FDR threshold
+hits_FDR = rownames(dsHits)[dsHits$adj.P.Val < cutoff.p]
+
+##Pulling out change in DNAm
+PROJECT_Beta<-m2beta(DNMT3A.PROJECT)
+
+fit_beta = lmFit(PROJECT_Beta,DesMat.DNMT3A)
+Ebfit_beta = eBayes(fit_beta)
+ttbeta_all = topTable(Ebfit_beta, n = Inf)
+
+##Setting delta beta threshold
+thresh = 0.02  # delta beta threshold
+delta_beta= rownames(ttbeta_all)[abs(ttbeta_all$TS) > thresh]
+
+##Where do all these hits intersect?
+delta_beta_intercept= intersect(delta_beta,hits_FDR)
+print(delta_beta_intercept)
+##This leaves us with 2 hits cg11779362-just under the DB>0.049
+
+##Subset out all our hits from ttbeta_all
+hits<-c('cg11779362')
+Our_hits<-ttbeta_all[which(rownames(ttbeta_all) %in% hits),]
+print(Our_hits)
+```
+
+```{r DNMT3A plots, fig.height=18, fig.width=18}
+##Subset columns of interest (GROUP,TS,m val,SEX,GA)
+cg11779362<-subset(interest_dat[,c(2,5,8,13,15)])
+
+##calculate beta values
+cg11779362$beta<-m2beta(cg11779362$cg11779362)
+
+##Plot the hit CpGs
+##cg19977628
+DNMT3A<-ggplot(cg11779362,aes(TS,beta))+
+  ylim(0,1.0)+
+  geom_point()+
+  stat_smooth(method="lm",se=T)+
+  xlab("T/S Ratio") + 
+   ylab("DNA methylation (Beta value)") + 
+   ggtitle("Correlation between DNAm and T/S ratio at cg11779362-DNMT3A")
+##0.051 change with every 1 point change in TL p=0.004
+
+##All graphs together- Candidate gene approach
+grid.arrange(TERT1,TERT2,DNMT1_1,DNMT1_2,DNMT3A, ncol=2)
+
+## Do we see differences between EOPE, LOPE, IUGR and controls at these sites?
+DNMT3A_BOXPLOT<-ggplot(cg11779362, aes(x=GROUP, y=beta)) + geom_boxplot() +
+    guides(fill=FALSE)+ylim(0.2,1)
+
+DNMT3A_BOXPLOT
+
+DNMT3Ahits<-DNMT3A.PROJECT[c('cg11779362'),]
+DNMT3Ahits<-t(DNMT3Ahits)
+DNMT3Ahits<-as.data.frame(DNMT3Ahits)
+
+DNMT3Ahits_Dat<-merge(DNMT3Ahits,T.Dat,by='row.names')
+
+##ANOVA to compare DNAm at cg11779362 between pathology
+amod <- aov(cg11779362~GROUP+SEX+GA, data = DNMT3Ahits_Dat)
+cht <- glht(amod, linfct = mcp(GROUP = "Tukey"))
+
+summary(cht, test = univariate())
+
+##All boxplot
+grid.arrange(TERT1_BOXPLOT,TERT2_BOXPLOT,DNMT11_BOXPLOT,DNMT12_BOXPLOT,DNMT3A_BOXPLOT, nrow=1)
+```
+
+Questions 3a.Does DNAm at DNMT1,3a and TERT differ in EOPE,LOPE and IUGR compared to controls?
+```{r DNAm at TERT DNMTs differ between groups or sex, fig.height=12, fig.width=12}
+DNAm_TL_Data<-read.table("DNAm_TL_Data.txt",header=T)
+
+##TERT
+(GRPvTS<- ggplot(DNAm_TL_Data, aes(GROUP, TERTavg,fill=GROUP)) + 
+   geom_boxplot()+scale_fill_manual(values=unique(grp.col)))+
+   theme_grey() + 
+   xlab("Group") + 
+   ylab("DNAm at TERT") + 
+   ggtitle("Change in DNAm at TERT with Group")
+
+amod <- aov(TERTavg~GROUP+SEX+GA, data = DNAm_TL_Data)
+cht <- glht(amod, linfct = mcp(GROUP = "Tukey"))
+
+summary(cht, test = univariate())
+##No significant different in average TERT DNAm between pathology groups
+
+##DNMT1
+(GRPvTS<- ggplot(DNAm_TL_Data, aes(GROUP, DNMT1avg,fill=GROUP)) + 
+   geom_boxplot()+scale_fill_manual(values=unique(grp.col)))+
+   theme_grey() + 
+   xlab("Group") + 
+   ylab("DNAm at DNMT1") + 
+   ggtitle("Change in DNAm at DNMT1 with Group")
+
+amod <- aov(DNMT1avg~GROUP+SEX+GA, data = DNAm_TL_Data)
+cht <- glht(amod, linfct = mcp(GROUP = "Tukey"))
+
+summary(cht, test = univariate())
+##No significantlt difference in average DNMT1 DNAm between pathology groups
+
+##DNMT3A
+(GRPvTS<- ggplot(DNAm_TL_Data, aes(GROUP, cg11779362,fill=GROUP)) + 
+   geom_boxplot()+scale_fill_manual(values=unique(grp.col)))+
+   theme_grey() + 
+   xlab("Group") + 
+   ylab("DNAm at DNMT3A") + 
+   ggtitle("Change in DNAm at DNMT3A with Group")
+
+amod <- aov(cg11779362~GROUP+SEX+GA, data = DNAm_TL_Data)
+cht <- glht(amod, linfct = mcp(GROUP = "Tukey"))
+
+summary(cht, test = univariate())
+##Significant different at cg11779362 between EOPE and control, and LOPE and control
+```
+
+Question 4: In a control population do we see association between TL and DNAm
+```{r ASSOCIATION BETWEEN TL AND DNAm in CTLs ONLY, fig.height=12,fig.width=12}
+##load('PROJECT.Telomere.Final.Dnam_Data.RData')
+
+##Subset out control samples
+Des.Con<-subset(Des,GROUP=="CONTROL")
+rownames(Des.Con)
+PROJECT.Con<-PROJECT[, which(colnames(PROJECT)  %in% rownames(Des.Con))]
+dim(PROJECT.Con)
+rownames(Des.Con)==colnames(PROJECT.Con)
+##13 control samples
+  
+##Limma
+DesMat <- model.matrix(~TS+GA+SEX, Des.Con)
+
+##Pull out m-values
+mDat<-PROJECT.Con
+Fit <- lmFit(mDat, DesMat)
+EbFit <- eBayes(Fit)
+topTable(EbFit,coef="TS")
+##In Controls we do not get any hits where TL is associated with DNAm adjusting for GA, sex and multiple comparisons. a corrected p value of 0.42 is the lowest we get
+
+##For p-value distribution
+tt<-topTable(EbFit,coef="TS", n=Inf)
+ggplot(tt, aes(x =P.Value)) +
+ geom_histogram() +
+ theme_grey() + 
+   xlab("p Value") + 
+   ylab("Frequency") + 
+   ggtitle("p Value Distribution for Controls: Telomere length in relation to DNAm")
+##No hits or skew to the left
+```
+
+As we saw no difference in telomere length between patholgy and control, we added all of the samples to the model to increase power, then looked for changes in DNAm associated with TL
+```{r TL DNAm ASSOCIATION WITH ALL SAMPLES, fig.height=12,fig.width=12}
+##Limma
+DesMat <- model.matrix(~TS+GA+SEX, Des)
+
+##Pull out m-values
+mDat<-PROJECT
+Fit <- lmFit(mDat, DesMat)
+EbFit <- eBayes(Fit)
+ttTS<-topTable(EbFit,coef="TS")
+##0 significant genes
+
+##For p-value distribution
+tt<-topTable(EbFit,coef="TS", n=Inf)
+ggplot(tt, aes(x =P.Value)) +
+ geom_histogram() +
+ theme_grey() + 
+   xlab("p Value") + 
+   ylab("Frequency") + 
+   ggtitle("p Value Distribution for Controls: Telomere length in relation to DNAm")
+
+##Pull hits
+(dsHits <- topTable(EbFit,
+                    coef = grep("TS", colnames(coef(EbFit)))))
+
+print(dsHits)
+```
+
+Question 5. Do we see changes in DNAm associated with TL on the XY chromosome?
+```{r Changes in TL associated with TL on XY chr}
+load('PE_IUGR_PROJECT.xy.RData')##Loading DNAm data from the XY chromosome
+dim(PROJECT.xy)
+XY<-as.matrix(exprs(PROJECT.xy))
+
+XY<-XY[, which(colnames(XY)  %in% colnames(PROJECT))]
+colnames(XY)  %in% rownames(T.Dat)
+Des<-T.Dat[which(rownames(T.Dat) %in% colnames(XY)),]
+
+##Linear regression looking for changes in DNAm of CHR XY in association with TL
+DesMat <- model.matrix(~TS+GA+SEX, Des)
+
+##Pull out m-values
+mDat<-XY
+
+Fit <- lmFit(mDat, DesMat)
+EbFit <- eBayes(Fit)
+ttTS<-topTable(EbFit,coef="TS")
+print(ttTS)
+##0 significant genes
+
+##For p-value distribution
+tt<-topTable(EbFit,coef="TS", n=Inf)
+ggplot(tt, aes(x =P.Value)) +
+ geom_histogram() +
+ theme_grey() + 
+   xlab("p Value") + 
+   ylab("Frequency") + 
+   ggtitle("p Value Distribution: Telomere length in relation to DNAm on XY")
+```
+
+Question 8- If I split my data into male and female and look for association between DNAm and TL is each fetal sex, are their sex dependent associations?
+
+```{r SPLITTING DATA INTO MALES AND FEMALES}
+##Subset Des
+Des_Fe<-subset(Des,SEX=="FEMALE")##27
+summary(Des_Fe$GROUP)
+
+Des_M<-subset(Des, SEX=="MALE")
+summary(Des_M$GROUP)
+
+##Subset Data
+PROJECT.Fe<-PROJECT[,which(colnames(PROJECT) %in% rownames(Des_Fe))]##27 females
+
+PROJECT.M<-PROJECT[,which(colnames(PROJECT) %in% rownames(Des_M))]##31 males
+
+```
+
+Looking at Females first
+Run Model Find hits-Females
+```{r RUNNING MODEL ON FE: TL associated with DNAm}
+##Linear regression looking for associated between DNAm and TL in females
+DesMat <- model.matrix(~0+TS+GA, Des_Fe)##No need to correct for sex, only looking at females
+
+##Pull out m-values
+mDat<-PROJECT.Fe
+
+Fit <- lmFit(mDat, DesMat)
+EbFit <- eBayes(Fit)
+ttTS<-topTable(EbFit,coef="TS", n = Inf)
+##0 meet FDR
+
+##For p-value distribution
+tt<-topTable(EbFit,coef="TS", n=Inf)
+ggplot(tt, aes(x =P.Value)) +
+ geom_histogram() +
+ theme_grey() + 
+   xlab("p Value") + 
+   ylab("Frequency") + 
+   ggtitle("p Value Distribution: Telomere length in relation to DNAm-Females")
+```
+
+Do they meet the delta beta threshold?
+Do any of these sites meet a delta beta threshold?
+```{r FEMALE BETA THRESHOLD, fig.height=12,fig.width=12}
+## Do any sites meet an FDR<0.05, and delta beta>0.05
+##Setting the FDR
+cutoff.p = 0.05  # FDR threshold
+hits_FDR = rownames(ttTS)[ttTS$adj.P.Val < cutoff.p]
+
+##Pulling out change in DNAm
+PROJECT.Fe_Beta<-m2beta(PROJECT.Fe)
+
+fit_beta = lmFit(PROJECT.Fe_Beta, DesMat)
+Ebfit_beta = eBayes(fit_beta)
+ttbeta_all = topTable(Ebfit_beta, n = Inf)
+
+##Setting delta beta threshold
+thresh = 0.05  # delta beta threshold
+delta_beta= rownames(ttbeta_all)[abs(ttbeta_all$TS) > thresh]
+length(delta_beta)##43101
+##43101 meet delta beta threshold
+
+##Where do all these hits intersect?
+delta_beta_intercept= intersect(delta_beta,hits_FDR)
+##None meet the delta beta threshold AND FDR
+```
+
+Volcano plots
+```{r FEMALE VOLCANO PLOT, fig.height=12, fig.width=12}
+##Volcano
+library(scales)
+##All data-females only
+ttTS$FDR<- as.factor(ttTS$adj.P.Val < 0.05)
+ttTS$beta<- as.factor(abs(ttbeta_all$TS) >= 0.05)
+ttTS$both<- as.factor(abs(ttbeta_all$TS) >= 0.05 & ttTS$adj.P.Val < 0.05 )
+ttTS$thres<-paste(substr(ttTS$FDR,1,1),substr(ttTS$beta,1,1),substr(ttTS$both,1,1))
+
+Allsamples_TS_vol<-ggplot(ttTS, aes(x=ttbeta_all$TS, y=-log10(ttTS$adj.P.Val), color=as.factor(ttTS$beta))) + 
+  geom_vline(xintercept=c(-0.10,0.10), color="slategray", size=1.5) + 
+  geom_vline(xintercept=c(-0.05,0.05), color="slategray", size=1.5) +
+  geom_hline(yintercept=(-log10(0.20)), color="slategray", size=1.0) + 
+  geom_hline(yintercept=(-log10(0.10)), color="slategray", size=1.0) + 
+  geom_hline(yintercept=(-log10(0.05)), color="slategray", size=1.0) + 
+  geom_point(shape=19, alpha=0.3, size=5) + theme_bw() +
+  ylab("-log10(adjusted P.Value)") + 
+  xlab("adjusted delta beta")+
+  scale_color_manual(values=c("seashell4","black"), guide=F) + 
+  coord_cartesian(xlim = c(-0.28, 0.28), ylim = c(-0.1,14))+
+  ggtitle("")+
+  annotate("text", -0.20,(-log10(0.045)) , label = "FDR <0.05", size=3)+
+  annotate("text", -0.20,(-log10(0.09)) , label = "FDR <0.10", size=3)+
+  annotate("text", -0.20,(-log10(0.18)) , label = "FDR <0.20", size=3)+
+   theme(axis.text.x=element_text(size=24),
+        axis.text.y=element_text(size=24),
+        axis.title.x=element_text(size=20, vjust=-0.3),
+        axis.title.y=element_text(size=20, vjust=2),
+        plot.title=element_text(size=20, vjust=3))
+
+Allsamples_TS_vol
+```
+
+Looking at Males
+```{r MALES: TL associated with DNAm}
+##Linear model looking for association between DNAm and TL in males
+DesMat <- model.matrix(~TS+GA, Des_M)##No need to correct for sex, only looking at females
+
+##Pull out m-values
+mDat<-PROJECT.M
+
+Fit <- lmFit(mDat, DesMat)
+EbFit <- eBayes(Fit)
+ttTS<-topTable(EbFit,coef="TS", n= Inf)
+print(head(ttTS))
+##0 meet FDR
+
+##For p-value distribution
+tt<-topTable(EbFit,coef="TS", n=Inf)
+ggplot(tt, aes(x =P.Value)) +
+ geom_histogram() +
+ theme_grey() + 
+   xlab("p Value") + 
+   ylab("Frequency") + 
+   ggtitle("p Value Distribution: Telomere length in relation to DNAm-Males")
+
+```
+
+Do they meet the delta beta threshold?
+Do any of these sites meet a delta beta threshold?
+```{r MALE Beta THRESHOLD, fig.height=12,fig.width=12}
+## Do any sites meet an FDR<0.05, and delta beta>0.05
+##Setting the FDR
+cutoff.p = 0.05  # FDR threshold
+hits_FDR = rownames(ttTS)[ttTS$adj.P.Val < cutoff.p]
+
+##Pulling out change in DNAm
+PROJECT.M_Beta<-m2beta(PROJECT.M)
+
+fit_beta = lmFit(PROJECT.M_Beta, DesMat)
+Ebfit_beta = eBayes(fit_beta)
+ttbeta_all = topTable(Ebfit_beta, n = Inf)
+
+##Setting delta beta threshold
+thresh = 0.05  # delta beta threshold
+delta_beta= rownames(ttbeta_all)[abs(ttbeta_all$TS) > thresh]
+length(delta_beta)##7590
+##7590 meet delta beta threshold
+
+##Where do all these hits intersect?
+delta_beta_intercept= intersect(delta_beta,hits_FDR)
+##None meet the delta beta threshold AND FDR
+```
+
+Volcano plots
+```{r MALE VOLCANO PLOT, fig.height=12, fig.width=12}
+##Volcano
+##All data-Males only
+ttTS$FDR<- as.factor(ttTS$adj.P.Val < 0.05)
+ttTS$beta<- as.factor(abs(ttbeta_all$TS) >= 0.05)
+ttTS$both<- as.factor(abs(ttbeta_all$TS) >= 0.05 & ttTS$adj.P.Val < 0.05 )
+ttTS$thres<-paste(substr(ttTS$FDR,1,1),substr(ttTS$beta,1,1),substr(ttTS$both,1,1))
+
+Allsamples_TS_M_vol<-ggplot(ttTS, aes(x=ttbeta_all$TS, y=-log10(ttTS$adj.P.Val), color=as.factor(ttTS$beta))) + 
+  geom_vline(xintercept=c(-0.10,0.10), color="slategray", size=1.5) + 
+  geom_vline(xintercept=c(-0.05,0.05), color="slategray", size=1.5) +
+  geom_hline(yintercept=(-log10(0.20)), color="slategray", size=1.0) + 
+  geom_hline(yintercept=(-log10(0.10)), color="slategray", size=1.0) + 
+  geom_hline(yintercept=(-log10(0.05)), color="slategray", size=1.0) + 
+  geom_point(shape=19, alpha=0.3, size=5) + theme_bw() +
+  ylab("-log10(adjusted P.Value)") + 
+  xlab("adjusted delta beta")+
+  scale_color_manual(values=c("seashell4","black"), guide=F) + 
+  coord_cartesian(xlim = c(-0.28, 0.28), ylim = c(-0.1,14))+
+  ggtitle("")+
+  annotate("text", -0.20,(-log10(0.045)) , label = "FDR <0.05", size=3)+
+  annotate("text", -0.20,(-log10(0.09)) , label = "FDR <0.10", size=3)+
+  annotate("text", -0.20,(-log10(0.18)) , label = "FDR <0.20", size=3)+
+   theme(axis.text.x=element_text(size=24),
+        axis.text.y=element_text(size=24),
+        axis.title.x=element_text(size=20, vjust=-0.3),
+        axis.title.y=element_text(size=20, vjust=2),
+        plot.title=element_text(size=20, vjust=3))
+
+Allsamples_TS_M_vol
+```

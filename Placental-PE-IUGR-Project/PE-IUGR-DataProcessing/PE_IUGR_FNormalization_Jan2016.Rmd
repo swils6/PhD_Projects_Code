@@ -1,0 +1,653 @@
+---
+title: "PE_IUGR_PreProcessing_Jan2016"
+author: "SLW"
+date: "January 13, 2016"
+output: 
+  html_document: 
+    keep_md: yes
+---
+**Load Libraries**
+```{r, message=FALSE}
+#source("https://bioconductor.org/biocLite.R")
+#biocLite('FDb.InfiniumMethylation.hg19')
+library(digest)
+library(methylumi)
+library(lumi)
+library(minfi)
+library(minfiData)
+library(gplots)
+library(reshape2)
+library(ggplot2)
+library("RColorBrewer")
+library(gplots)
+library(gridExtra)
+library(grid)
+library(lattice)
+library(compare)
+library(limma)
+library(matrixStats)
+```
+
+**Read in Design matrix**
+```{r}
+setwd("Z:/ROBLAB1 coredata-databases/1 Samantha DATA Folder/PROJECTS/PE_IUGR_Array/Robinson Cohort")
+
+##Read in Phenotypic data
+des<-read.csv('Design_matrix_WPR_2015.csv')
+str(des)
+des$Sentrix_ID<-as.factor(des$Sentrix_ID)
+```
+
+**Reading in IDAT Files**
+```{r warning=FALSE, results='hide',message=FALSE}
+##Read in the raw IDAT Files
+setwd("Z:/ROBLAB1 coredata-databases/1 Samantha DATA Folder/PROJECTS/PE_IUGR_Array/Robinson Cohort")
+path <- "IDAT Files"
+list.files(path)
+list.files(file.path(path, "7970368036"))
+
+targets <- read.450k.sheet(path)
+#targets <- read.metharray.sheet(path)
+
+baseDir <- system.file(path, package = "minfiData")
+sub(baseDir, "", targets$Basename)
+##If there is a character(0) within the files, you have a incorrect IDAT file, go back and double check
+
+##Had issues with exceeding memory limit in this next step
+## use this function if you have issues memory.limit(size=)
+RGset <- read.450k.exp(targets = targets, verbose = TRUE)
+RGset
+pd <- pData(RGset)
+colnames(pd) <- gsub("X", "sampleName", colnames(pd))
+```
+
+**Quality Control Checks**
+```{r, warning=FALSE}
+qcReport(RGset, sampNames = pd$sampleName, sampGroups = pd$cell, pdf = "minfi_qcReport.pdf")
+
+##Some plots of the quality of the data
+densityPlot(RGset, sampGroups = pd$group,main = "Beta", xlab = "Beta")
+
+```
+
+**Raw,Genome Studio equivalent and swan normalization ofr comparison**
+For comparison, make a raw, Illumina, and SWAN preprocessed datasets
+```{r, results='hide',message=FALSE}
+MSet.raw <- preprocessRaw(RGset)
+MSet.raw <- MSet.raw[order(featureNames(MSet.raw)), ]
+MSet.norm <- preprocessIllumina(RGset, bg.correct = TRUE, normalize = "no")
+MSet.norm <- MSet.norm[order(featureNames(MSet.norm)), ]
+MSet.swan <- preprocessSWAN(RGset, mSet = MSet.norm, verbose = TRUE)
+MSet.swan <- MSet.swan[order(featureNames(MSet.swan)), ]
+```
+
+**Functional normalization**
+```{r}
+MSet.fnorm <- preprocessFunnorm(RGset, nPCs = 2, sex = NULL, bgCorr = TRUE, dyeCorr = TRUE, verbose = TRUE)
+# functional normalization with background and dye bias correction using noob
+MSet.fnorm <- MSet.fnorm[order(featureNames(MSet.fnorm)), ]
+MSet.fnorm
+
+##save project
+##save(MSet.fnorm, file = "Z:/ROBLAB1 coredata-databases/1 Samantha DATA Folder/PROJECTS/PE_IUGR_Array/Robinson Cohort/Mset.fnorm_Jan2016.RData")
+```
+
+**More Quality Control**
+```{r}
+##Checking that all samples have the same sex as the records record
+sex <- getSex(MSet.fnorm)
+plotSex(sex)
+
+##All samples plotted to the correct fetal sex
+```
+
+**Assessing Illumina Normalization (GenomeStudio)**
+```{r}
+qc <- getQC(MSet.norm)
+plot(as.matrix(getQC(MSet.norm)))
+```
+
+**Looking at sample groups with funNorm**
+```{r, fig.height=12,fig.width=12}
+##set colour palette
+group.col <- c("purple4", "dodgerblue2", "turquoise1", "darkorange", "violetred")
+
+mdsPlot(getBeta(MSet.fnorm), numPositions = 485512, sampGroups = pd$group, sampNames = pd$sampleName, pal = group.col, legendPos = "topright")
+mdsPlot(getBeta(MSet.fnorm), numPositions = 100000, sampGroups = pd$group, sampNames = pd$sampleName, pal = group.col,legendPos = "topright")
+mdsPlot(getBeta(MSet.fnorm), numPositions = 10000, sampGroups = pd$group, sampNames = pd$sampleName, pal = group.col,legendPos = "topright")
+mdsPlot(getBeta(MSet.fnorm), numPositions = 1000, sampGroups = pd$group, sampNames = pd$sampleName, pal = group.col,legendPos = "topright")
+
+```
+
+**Comparing Normalization methods**
+```{r}
+all(featureNames(MSet.raw) == featureNames(MSet.norm))
+all(featureNames(MSet.raw) == featureNames(MSet.fnorm))
+all(featureNames(MSet.raw) == featureNames(MSet.swan))
+
+probeTypes <- data.frame(Name = featureNames(MSet.raw),
+                         Type = getProbeType(MSet.raw))
+
+par(mfrow = c(2, 2))
+plotBetasByType(MSet.raw[,1], main = "Raw")
+plotBetasByType(MSet.norm[,1], main = "GS_norm")
+plotBetasByType(MSet.swan[,1], main = "SWAN")
+plotBetasByType(getBeta(MSet.fnorm[,1]), probeTypes = probeTypes, main = "funNorm_noob")
+##By the looks of things here functional normalization appears to do a better job at normalizing my samples, with the type 1 and type 2 probes being closer together
+```
+
+```{r Colouring variables, results='hide'}
+(v.chp.col<-as.vector(pd$Slide))
+(v.chp.col<-gsub("6042308147","black",v.chp.col))
+(v.chp.col<-gsub("6042324020","green",v.chp.col))
+(v.chp.col<-gsub("7970368014","purple",v.chp.col))
+(v.chp.col<-gsub("7970368023","red",v.chp.col))
+(v.chp.col<-gsub("7970368036","blue",v.chp.col))
+(v.chp.col<-gsub("7970368050","yellow",v.chp.col))
+(v.chp.col<-gsub("7970368054","orange",v.chp.col))
+(v.chp.col<-gsub("7970368062","grey",v.chp.col))
+(v.chp.col<-gsub("7970368066","darkred",v.chp.col))
+(v.chp.col<-gsub("7970368076","lightgreen",v.chp.col))
+(v.chp.col<-gsub("7970368097","darkblue",v.chp.col))
+(v.chp.col<-gsub("7970368112","white",v.chp.col))
+(v.chp.col<-gsub("7970368142","pink",v.chp.col))
+(v.chp.col<-gsub("7973201026","lightyellow",v.chp.col))
+(v.chp.col<-gsub("7973201038","lightblue",v.chp.col))
+(v.chp.col<-gsub("9266441046","black",v.chp.col))
+(v.chp.col<-gsub("9266441156","green",v.chp.col))
+(v.chp.col<-gsub("9285451020","purple",v.chp.col))
+(v.chp.col<-gsub("9285451059","red",v.chp.col))
+(v.chp.col<-gsub("9296930098","blue",v.chp.col))
+(v.chp.col<-gsub("9296930103","yellow",v.chp.col))
+(v.chp.col<-gsub("9296930123","orange",v.chp.col))
+(v.chp.col<-gsub("9977525013","grey",v.chp.col))
+(v.chp.col<-gsub("9977525015","darkred",v.chp.col))
+(v.chp.col<-gsub("10005833024","lightgreen",v.chp.col))
+(v.chp.col<-gsub("10005833037","darkblue",v.chp.col))
+(v.chp.col<-gsub("10005833038","white",v.chp.col))
+(v.chp.col<-gsub("6042308143","pink",v.chp.col))
+(v.chp.col<-gsub("7970368100","lightblue",v.chp.col))
+v.chp.col
+
+(v.grp.col<-as.vector(pd$group))
+(v.grp.col<-gsub("Term","black",v.grp.col))
+(v.grp.col<-gsub("PreT","chocolate4",v.grp.col))
+(v.grp.col<-gsub("LOPE","blue",v.grp.col))
+(v.grp.col<-gsub("IUGR","goldenrod",v.grp.col))
+(v.grp.col<-gsub("REPLICATE","red",v.grp.col))
+(v.grp.col<-gsub("EOPE","lightseagreen",v.grp.col))
+v.grp.col
+```
+
+**Looking at batch effects with heatmap**
+```{r fig.height=100, fig.width=100}
+##colour
+grey <- colorRampPalette(brewer.pal(n = 9, "Greys"))
+
+library(gplots)
+cor.raw <- cor(getBeta(MSet.raw), use = "pairwise.complete.obs")
+rownames(cor.raw) <- pd$ParticipantID
+heatmap.2(cor.raw, main = "MSet.raw, no SNPs - 485,512 probes",
+          trace = "none", col = grey, dendrogram = "row",
+          RowSideColors = v.grp.col, cexRow = 0.5,
+          ColSideColors = v.chp.col, cexCol = 0.9, keysize = 1, margins = c(20,20),
+          key = TRUE)
+legend("bottomright",bty="n",title="Side bar colours",c("Term","PreT", "LOPE","IUGR","REPLICATE","EOPE"),
+       fill=c("black","chocolate4","blue","goldenrod","red","lightseagreen"),ncol=3)
+
+cor.norm <- cor(getBeta(MSet.norm), use = "pairwise.complete.obs")
+rownames(cor.norm) <- pd$ParticipantID
+heatmap.2(cor.norm, main = "MSet.norm, no SNPs - 485,512 probes",
+          trace = "none", col = grey, dendrogram = "row",
+          RowSideColors = v.grp.col, cexRow = 0.5,
+          ColSideColors = v.chp.col, cexCol = 0.9, keysize = 1, margins = c(20,20))
+legend("bottomright",bty="n",title="Side bar colours",c("Term","PreT", "LOPE","IUGR","REPLICATE","EOPE"),
+       fill=c("black","chocolate4","blue","goldenrod","red","lightseagreen"),ncol=3)
+
+cor.swan <- cor(getBeta(MSet.swan), use = "pairwise.complete.obs")
+rownames(cor.swan) <- pd$ParticipantID
+heatmap.2(cor.swan, main = "MSet.swan, no SNPs - 485,512 probes",
+          trace = "none", col = grey, dendrogram = "row",
+          RowSideColors = v.grp.col, cexRow = 0.5,
+          ColSideColors = v.chp.col, cexCol = 0.9, keysize = 1, margins = c(20,20))
+legend("bottomright",bty="n",title="Side bar colours",c("Term","PreT", "LOPE","IUGR","REPLICATE","EOPE"),
+       fill=c("black","chocolate4","blue","goldenrod","red","lightseagreen"),ncol=3)
+
+cor.fnorm <- cor(getBeta(MSet.fnorm), use = "pairwise.complete.obs")
+rownames(cor.fnorm) <- pd$ParticipantID
+heatmap.2(cor.fnorm, main = "MSet.fnorm, no SNPs - 485,512 probes",
+          trace = "none", col = grey, dendrogram = "row",
+          RowSideColors = v.grp.col, cexRow = 0.5,
+          ColSideColors = v.chp.col, cexCol = 0.9, keysize = 1, margins = c(20,20))
+legend("bottomright",bty="n",title="Side bar colours",c("Term","PreT", "LOPE","IUGR","REPLICATE","EOPE"),
+       fill=c("black","chocolate4","blue","goldenrod","red","lightseagreen"),ncol=3)
+```
+
+**Taking m values from Functional Normalization and putting into methylumi PROJECT**
+First make a methylumi object with all samples
+```{r}
+setwd('Z:/ROBLAB1 coredata-databases/1 Samantha DATA Folder/PROJECTS/PE_IUGR_Array/Robinson Cohort')
+##allFile <- file.choose() ## From GenomeStudio: all samples, all columns (all illumina annotation information) 
+#                     + average beta, detection Pval, signal A, signal B
+
+##betaFile <- file.choose() ## From GenomeStudio: all the samples, columns
+#                     + average beta
+
+##qcFile <-  file.choose() ## From GenomeStudio: under Control Probes Profile - all samples, all columns 
+#                     + Signal_Grn, Signal_Red, Detection Pval
+
+load('PROJECT.original_nofilter_Jan2016.RData')
+load('PROJECT.2.original_nofilter_Jan2016.RData')
+##PROJECT<-lumiMethyR(allFile)
+##PROJECT.2 <- methylumiR(betaFile,qcfile=qcFile)
+
+# DataSummary
+PROJECT#110 samples * 485,577 features
+#sampleNames(PROJECT)
+
+##save(PROJECT,file="PROJECT.original_nofilter_Jan2016.RData")
+##save(PROJECT.2,file="PROJECT.2.original_nofilter_Jan2016.RData")
+```
+
+**Organizing Design Matrix file**
+```{r Organizing Design Matrix}
+##reading in Phenotype data
+des<-read.csv("Design_matrix_WPR_from540_final.csv",header=T)
+rownames(des)<-des$ParticipantID
+#str(des)
+#Removing unneeded phenotypic data (mostly incomplete data)
+des$Sentrix_ID<-as.factor(des$Sentrix_ID)
+des$F_PL<-NULL
+des$PW<-NULL
+des$PL_length<-NULL
+des$PL_breadth<-NULL
+des$Lgth_Bdth<-NULL
+des$Ethnicity<-NULL
+des$BW<-NULL
+#str(des)
+
+all(sampleNames(PROJECT)%in% rownames(des)) #TRUE
+stopifnot(all(sampleNames(PROJECT)%in% rownames(des))) #TRUE
+Des <- des[sampleNames(PROJECT),] # *** must reorder des so that sampleNames & des are in same order!!
+stopifnot(all(sampleNames(PROJECT)%in% rownames(Des))) #TRUE
+#sampleNames(PROJECT)
+#rownames(Des) # do a visual check of sample names
+
+pData(PROJECT) <- des
+
+PROJECT <- PROJECT[, order(sampleNames(PROJECT))] # reorder by sample names
+#sampleNames(PROJECT)<-rownames(des)
+
+#organize PROJECT.2
+PROJECT.2 <- PROJECT.2[,order(sampleNames(PROJECT.2))]
+sampleNames(PROJECT.2) # do a visual check of sample names in PROJECT & PROJECT.2
+
+#check that sample names & feature names are the same in PROJECT & PROJECT.2
+all(featureNames(PROJECT)%in%featureNames(PROJECT.2)) ## Must be TRUE
+all(sampleNames(PROJECT)%in%sampleNames(PROJECT.2)) ## Must be TRUE
+```
+
+**Bad detection p values**
+```{r}
+badDetP <- detection(PROJECT)>0.01
+nbadDetP <- print(sum(rowSums(badDetP)>=5))##1250 # Number of probes with at least one bad detectionP --2443
+tbadDetP<-print(sum(badDetP)) # total number of NAs -- 32581
+nbadDetP.t<-cbind(colSums(badDetP),as.character(PROJECT$Plate))
+str(nbadDetP.t)
+#write.table(nbadDetP.t,file='bad dectection p vals_Jan2016.txt')
+```
+
+**Missing Beta Values**
+```{r}
+avgbeta <- betas(PROJECT.2)[featureNames(PROJECT),sampleNames(PROJECT)]
+badAvgbeta <- is.na(avgbeta)
+nbadAvgbeta <- print(sum(rowSums(badAvgbeta)>=1))# Number of probes with at least one no avgbeta -- 70,814
+tbadAvgbeta<-print(sum(badAvgbeta)) # total number of NAs -- 98199
+nbadAvgbeta.t<-cbind(colSums(badAvgbeta), as.character(PROJECT$Plate))
+str(nbadAvgbeta.t)
+#write.table(nbadAvgbeta.t,file='missing betas_all samples_Jan2016.txt')
+```
+
+**Filtering Probes-bad probes (missing betas and bad detetion p vals)**
+```{r}
+# Set numbers for bad probes 
+(nSamples<-length(sampleNames(PROJECT)))
+(Per5<-5)
+## bad detection p value (>0.01)
+badDetP <- detection(PROJECT)>0.01
+nbadDetP <- print(sum(rowSums(badDetP)>=5)) # Number of probes ---- 1250- this is a very strinent criteria, to cut down the amount of probes I'm removing I will only take samples in which detection p val is>0.01 in >20% of samples
+
+## missing beta values
+betas.NA <- betas(PROJECT.2)[featureNames(PROJECT.2),sampleNames(PROJECT.2)]
+#head(betas.NA)
+badAvgbeta<- is.na(betas.NA)
+nbadAvgbeta <- print(sum(rowSums(badAvgbeta)>Per5))# Number of probes ---- 705
+##only 705 probes are missing beta values in >5% of my samples
+
+# total number of bad probes
+badProbes <- rowSums(badDetP)>=Per5|rowSums(badAvgbeta)>=Per5 ## denotes that we're removing any probe with either a bad average beta or a bad detection P values in more than 5% of samples
+sum(badProbes)# Number of probes that will be removed ------ 2294
+
+PROJECT.filt <- PROJECT[!badProbes,] #removes all badProbes
+dim(PROJECT.filt) #110 samples, 483283  probes
+
+##save a version of the project with no NAs
+PROJECT.noNA<-PROJECT.filt
+
+PROJECT.2.filt<-PROJECT.2[!badProbes,]
+dim(PROJECT.2.filt)
+```
+
+**Any detection p values>0.01, and <5% percent of samples become NA**
+*Putting NAs from PROJECT.2.filt into PROJECT.filt*
+```{r}
+sum(is.na(exprs(PROJECT.filt)))##0
+sum((detection(PROJECT.filt)>0.01))##6541 probes with >0.01 reading
+
+sum(is.na(betas(PROJECT.2)))##98199- total number of sites with NAs
+
+##Putting in NAs
+exprs(PROJECT.filt)[is.na(betas(PROJECT.2.filt))]<-NA
+exprs.NA <- exprs(PROJECT.filt)[featureNames(PROJECT.filt),sampleNames(PROJECT.filt)]
+exprs.badAvgbeta<- is.na(exprs.NA)
+exprs.nbadAvgbeta <- print(sum(rowSums(exprs.badAvgbeta)>=1)) #69400- slightly less than above, because we took out bad probes
+stopifnot(length(nbadAvgbeta)==length(exprs.nbadAvgbeta))
+exprs.tbadAvgbeta<-print(sum(exprs.badAvgbeta))# total number of NAs in M values-- 89031
+
+# Transfer NAs into M values for probes with bad detection pvalues
+sum(badDetP <- detection(PROJECT.filt)>0.01) #6541 (same as above)
+exprs(PROJECT.filt)[(detection(PROJECT.filt)>0.01)]<-NA
+exprs.NA <- exprs(PROJECT.filt)[featureNames(PROJECT.filt),sampleNames(PROJECT.filt)]
+exprs.NA.T<- is.na(exprs.NA) # matrix of T/F is the M value an NA?
+exprs.n <- print(sum(rowSums(exprs.NA.T)>=1))#number of probes with >=1 NA -- 71974
+
+print(sum(exprs.NA.T))# total number of NAs -- 95543
+
+# Sanity check that NAs were transferred
+sum(is.na(exprs(PROJECT.filt))) # 95543
+
+##PROJECT with PROJECT.2 NAs in place- be used in any statistical analysis
+PROJECT.NA<-PROJECT.filt
+```
+
+**Filter XY probes,SNP probes, and cross hybridizing probes**
+```{r}
+##remove XY chromosome probes PROJECT.noNA
+PROJECT.xy <- PROJECT.noNA[fData(PROJECT.noNA)$CHR%in%c("X","Y"),] 
+PROJECT.xy #n=11,273
+
+PROJECT.noNA.noXY<- PROJECT.noNA[!fData(PROJECT.noNA)$CHR%in%c("X","Y"),]
+PROJECT.noNA.noXY #110 samples, 472010  probes
+
+##PROJECT.NA
+PROJECT.xy <- PROJECT.NA[fData(PROJECT.NA)$CHR%in%c("X","Y"),] 
+PROJECT.xy #n=11,273
+
+PROJECT.NA.noXY<- PROJECT.NA[!fData(PROJECT.NA)$CHR%in%c("X","Y"),]
+PROJECT.NA.noXY #110 samples, 472010  probes
+
+##PROJECT.2.filt
+PROJECT.xy <- PROJECT.2.filt[fData(PROJECT.2.filt)$CHR%in%c("X","Y"),] 
+PROJECT.xy #n=11,273
+
+PROJECT.2.filt.noXY<- PROJECT.2.filt[!fData(PROJECT.2.filt)$CHR%in%c("X","Y"),]
+PROJECT.2.filt.noXY #110 samples, 472010  probes
+```
+
+**Filter Polymorphic Probes**
+```{r}
+##PROJECT.noNA
+fvarLabels(PROJECT.noNA.noXY)
+PROJECT.noNA.noXY.noSNP<-PROJECT.noNA.noXY[substring(fData(PROJECT.noNA.noXY)[,5], 1,2)!="rs",] #removes all SNP probes
+PROJECT.noNA.noXY.noSNP #110 samples, 453,182 probes
+
+##PROJECT.NA
+fvarLabels(PROJECT.NA.noXY)
+PROJECT.NA.noXY.noSNP<-PROJECT.NA.noXY[substring(fData(PROJECT.NA.noXY)[,5], 1,2)!="rs",] #removes all SNP probes
+PROJECT.NA.noXY.noSNP #110 samples, 453,182 probes
+
+##PROJECT.2.filt
+fvarLabels(PROJECT.2.filt.noXY)
+PROJECT.2.filt.noXY.noSNP<-PROJECT.2.filt.noXY[substring(fData(PROJECT.2.filt.noXY)[,5], 1,2)!="rs",] #removes all SNP probes
+PROJECT.2.filt.noXY.noSNP #110 samples, 453,182 probes
+```
+
+**Filter Cross hybridizing probes**
+```{r}
+##PROJECT.noNA
+xy_hit_index <- which(featureData(PROJECT.noNA.noXY.noSNP)$XY_Hits == "XY_NO")
+PROJECT.noNA.noXY.noSNP.noCH<- PROJECT.noNA.noXY.noSNP[xy_hit_index, ]
+PROJECT.noNA.noXY.noSNP.noCH #110 samples, 441093 probes
+
+##PROJECT.NA
+xy_hit_index <- which(featureData(PROJECT.NA.noXY.noSNP)$XY_Hits == "XY_NO")
+PROJECT.NA.noXY.noSNP.noCH<- PROJECT.NA.noXY.noSNP[xy_hit_index, ]
+PROJECT.NA.noXY.noSNP.noCH #110 samples, 441093 probes
+
+##PROJECT.2.filt
+xy_hit_index <- which(featureData(PROJECT.2.filt.noXY.noSNP)$XY_Hits == "XY_NO")
+PROJECT.2.filt.noXY.noSNP.noCH<- PROJECT.2.filt.noXY.noSNP[xy_hit_index, ]
+PROJECT.2.filt.noXY.noSNP.noCH #110 samples, 441093 probes
+
+```
+
+**Save PROJECTS**
+```{r}
+##save PROJECT.NA
+PROJECT.NA<-PROJECT.NA.noXY.noSNP.noCH
+##save(PROJECT.NA,file="PROJECT.NA_Jan2016.RData")
+  
+## PROJECT with no NAs in place- used in any visual 
+PROJECT.noNA<-PROJECT.noNA.noXY.noSNP.noCH
+##save(PROJECT.noNA,file="PROJECT.noNA_Jan2016.RData")
+
+##save PROJECT.2.filt
+PROJECT.filt.2<-PROJECT.2.filt.noXY.noSNP.noCH
+##save(PROJECT.2.filt,file="PROJECT.2.filt_Jan2016.RData")
+
+sum(is.na((exprs(PROJECT.noNA))))##0
+sum(is.na((exprs(PROJECT.NA))))##86409
+sum(is.na((betas(PROJECT.2.filt))))
+```
+
+**Now putting in the M values from Functional Normalization into the methylumi object**
+```{r}
+setwd('Z:/ROBLAB1 coredata-databases/1 Samantha DATA Folder/PROJECTS/PE_IUGR_Array/Robinson Cohort')
+##Load functional normalization project
+##load("Z:/ROBLAB1 coredata-databases/1 Samantha DATA Folder/PROJECTS/PE_IUGR_Array/Robinson Cohort/Mset.fnorm_Jan2016.RData")
+
+##Load the SWAN normalized project and des file
+##load("PROJECT.NA_Jan2016.RData")
+
+PROJECT<-PROJECT.NA
+dim(PROJECT)
+
+des<-read.csv('Design_matrix_WPR_2015.csv')
+#str(des)
+des$Sentrix_ID<-as.factor(des$Sentrix_ID)
+
+##Remove samples from project that are not in MSet.fnorm
+##First compare sampleNames
+#sampleNames(PROJECT)
+#MSet.fnorm$ParticipantID
+
+##removing chr.ab samples from PROJECT
+rm <- c("PM40","PM41","PM29","PM35","PM121","PM226","PM256","PM306r")
+PROJECT<-PROJECT[, -which(sampleNames(PROJECT) %in% rm)]
+dim(PROJECT)
+
+#sampleNames(PROJECT)
+MSet.fnorm$ParticipantID
+rownames(des)<-des$ParticipantID
+#rownames(des)
+
+all(sampleNames(PROJECT) == rownames(des)) #FALSE
+
+##Reorder samples
+des<- des[sampleNames(PROJECT),]
+all(sampleNames(PROJECT) == rownames(des)) #TRUE
+
+Mset.fnorm <- MSet.fnorm[,match(rownames(des), MSet.fnorm$ParticipantID)]
+all(Mset.fnorm$ParticipantID == rownames(des)) #TRUE
+
+filtDat <- exprs(PROJECT[substring(featureNames(PROJECT), 1, 2) != "rs", ])
+keepNames <- paste(as.character(des$Sentrix_ID), as.character(des$Sentrix_Position), sep = "_")
+fnorm.M <- getM(MSet.fnorm)
+fnorm.M.filt <- fnorm.M[rownames(filtDat), keepNames]
+colnames(fnorm.M.filt) <- rownames(des)
+
+filtDat[1:5, 1:5]
+fnorm.M.filt[1:5, 1:5]
+
+PROJECT.fun <- PROJECT[substring(featureNames(PROJECT), 1, 2) != "rs", ]
+#all(colnames(exprs(PROJECT.fun)) %in% colnames(fnorm.M.filt))
+##double equal sign is more stringent, if samples are not in the same order than it will be false. I changed in == in %in% to just check if all the samples in each list are the same. 
+
+all(rownames(exprs(PROJECT.fun)) == rownames(fnorm.M.filt))##TRUE
+exprs(PROJECT.fun) <- fnorm.M.filt
+
+sum(is.na(exprs(PROJECT.fun)))##0
+##We didn't have a project.2 for this data- but it is only the beta value which I can later create a beta matrix with just out project.
+
+save(PROJECT.fun, file = "Z:/ROBLAB1 coredata-databases/1 Samantha DATA Folder/PROJECTS/PE_IUGR_Array/Robinson Cohort/PROJECT.fnorm_Jan2016.RData")
+
+dim(PROJECT.fun)
+##yay probes are already filterd
+```
+
+**Looking at variance due to batch in the fnorm data**
+Heat Scree plot code written by Rachel Edgar and Sumaiya Islam
+
+Citation:De Souza, Rebecca AG, et al. "DNA methylation profiling in human Huntington's disease brain." Human molecular genetics (2016): ddw076.
+```{r, error=FALSE, warning=FALSE}
+##Heatmap and scree plot function
+### Function of association meta variable with PC (ANOVA)
+heat_scree_plot<-function(Loadings, Importance, Num, Order){
+  adjust<-1-Importance[1]
+  pca_adjusted<-Importance[2:length(Importance)]/adjust
+  pca_df<-data.frame(adjusted_variance=pca_adjusted, PC=seq(1:length(pca_adjusted)))
+  
+  scree<-ggplot(pca_df[which(pca_df$PC<Num),],aes(PC,adjusted_variance))+geom_bar(stat = "identity",color="black",fill="grey")+theme_bw()+
+        theme(axis.text = element_text(size =12),
+              axis.title = element_text(size =15),
+              plot.margin=unit(c(1,1.5,0.2,2.25),"cm"))+ylab("Variance")+
+    scale_x_continuous(breaks = seq(1,Num,1))
+  
+  #### Heat
+  ## correlate meta with PCS
+  ## Run anova of each PC on each meta data variable
+
+  aov_PC_meta<-lapply(1:ncol(meta_categorical), function(covar) sapply(1:ncol(Loadings), function(PC) summary(aov(Loadings[,PC]~meta_categorical[,covar]))[[1]]$"Pr(>F)"[1]))
+   cor_PC_meta<-lapply(1:ncol(meta_continuous), function(covar) sapply(1:ncol(Loadings), function(PC) (cor.test(Loadings[,PC],as.numeric(meta_continuous[,covar]),alternative = "two.sided", method="spearman", na.action=na.omit)$p.value)))
+  names(aov_PC_meta)<-colnames(meta_categorical)
+  names(cor_PC_meta)<-colnames(meta_continuous)
+  aov_PC_meta<-do.call(rbind, aov_PC_meta)
+  cor_PC_meta<-do.call(rbind, cor_PC_meta)
+  aov_PC_meta<-rbind(aov_PC_meta, cor_PC_meta)
+  aov_PC_meta<-as.data.frame(aov_PC_meta)
+  #adjust
+  aov_PC_meta_adjust<-aov_PC_meta[,2:ncol(aov_PC_meta)]
+  
+    
+  #reshape
+  avo<-aov_PC_meta_adjust[,1:(Num-1)]
+  avo_heat_num<-apply(avo,2, as.numeric)
+  avo_heat<-as.data.frame(avo_heat_num)
+  colnames(avo_heat)<-sapply(1:(Num-1), function(x) paste("PC",x, sep=""))
+  avo_heat$meta<-rownames(avo)
+  avo_heat_melt<-melt(avo_heat, id=c("meta"))
+  
+  # cluster meta data
+  ord <- Order
+  meta_var_order<-unique(avo_heat_melt$meta)[rev(ord)]
+  avo_heat_melt$meta <- factor(avo_heat_melt$meta, levels = meta_var_order)
+  
+  # color if sig
+  # avo_heat_melt$Pvalue<-sapply(1:nrow(avo_heat_melt), function(x) if(avo_heat_melt$value[x]>=0.9){">=0.9"}else{
+   # if(avo_heat_melt$value[x]>=0.5){">=0.5"}else{
+     # if(avo_heat_melt$value[x]>=0.1){">=0.1"}else{"<0.1"}}})
+  avo_heat_melt$Pvalue<-sapply(1:nrow(avo_heat_melt), function(x) if(avo_heat_melt$value[x]<=0.001){"<=0.001"}else{
+     if(avo_heat_melt$value[x]<=0.01){"<=0.01"}else{
+       if(avo_heat_melt$value[x]<=0.05){"<=0.05"}else{">0.05"}}})
+  
+  heat<-ggplot(avo_heat_melt, aes(variable,meta, fill = Pvalue)) +
+  geom_tile(color = "black",size=0.5) +
+  theme_gray(8)+scale_fill_manual(values=c("#084594","#4292c6","#9ecae1","#deebf7"))+
+      theme(axis.text = element_text(size =10, color="black"),
+            axis.text.x = element_text(),
+          axis.title = element_text(size =15),
+          legend.text = element_text(size =14),
+          legend.title = element_text(size =12),
+          legend.position = c(1, 0), legend.justification = c(1,0),
+          plot.margin=unit(c(0,2.25,1,1),"cm"))+
+    xlab("Principal Component")+ylab(NULL)
+  
+  grid.arrange(scree, heat, ncol=1, heights = c(2, 4))
+}
+
+identical(rownames(des), rownames(pData(PROJECT.fun)))##Should be true
+Dat<-PROJECT.fun
+
+## re-structure meta data: change categorical variables to factors for ANOVA and continuous variables to numeric for Spearman's correlation
+#str(des)
+des$group<- as.factor(des$group)
+des$Sex<- as.factor(des$Sex)
+des$IUGR <- as.factor(des$IUGR)
+des$MA<- as.numeric(des$MA) 
+des$GA <- as.numeric(des$GA)
+des$BW<- as.numeric(des$BW)
+des$BW_SD<- as.numeric(des$BW_SD)
+des$Plate<-as.factor(des$Plate)
+des$Sentrix_ID <-as.factor(des$Sentrix_ID)
+des$Sentrix_Position<-as.factor(des$Sentrix_Position)
+
+for (i in 1:nrow(des)){
+  des$Row[i]<-paste(substr(des[i,"Sentrix_Position"], start=1, stop=3))
+}
+des$Row<- as.factor(des$Row)
+str(des)
+```
+
+PCA Heat Scree Plot
+```{r fig.height=12, fig.width=12,warning=FALSE}
+## PCA
+PCA_full<-princomp(scale(betas(Dat), center = TRUE, scale = FALSE), cor=FALSE) # scaling is not necessary for normalized dataset
+Loadings<-as.data.frame(unclass(PCA_full$loadings))
+vars <- PCA_full$sdev^2
+Importance<-vars/sum(vars)
+adjust<-1-Importance[1]
+pca_adjusted<-Importance[2:length(Importance)]/adjust
+(pca_df<-data.frame(adjusted_variance=pca_adjusted, PC=seq(1:length(pca_adjusted))))
+#save(pca_df, file="Adj_PC_variance_PostFNorm_Jan2016.txt")
+
+meta_categorical<-des[,c("group", "Sex","Plate", "Sentrix_ID", "Row")]  # input column numbers in meta that contain categorical variables
+
+meta_continuous<-des[,c("BW", "MA", "GA")] # input column numbers in meta that contain continuous variables
+meta_continuous<-data.frame(meta_continuous)
+colnames(meta_categorical)<-c("Pathology","Sex", "Chip", "Row","Plate")
+colnames(meta_continuous)<-c("Birth_weight", "Maternal_Age","Gestational_Age")
+
+# Specifiy the number of PCs you want shown
+Num<-20 # should be equal to the number of samples in your dataset; for large datasets, you can opt to just see the top PCs
+
+# Designate what order you want the variables to appear (continuous variables rbinded to categorical variables in function)
+Order<-c(1,2,3,4,5,6,7,8)
+
+#Apply function on PCA results, pulls in the meta data and beta values from above
+heat_scree_plot(Loadings, Importance, Num, Order)
+```
+
+P-value distribution post Functional normalization
+```{r}
+#head(Des)
+Des1 = model.matrix(~group+GA + Sex, data = des)
+head(Des1)
+fit1 = lmFit(PROJECT.fun, Des1)
+fit1 = eBayes(fit1)
+
+##Using Sex for the p-value distribution as to not bias myself for the number of hits in my variable of interest
+tt_sex = topTable(fit1, coef = "SexMALE", n = Inf)
+qplot(tt_sex$P.Value, geom = "density", main = "Fetal Sex (Male)", xlab = "p value",ylim=c(0,3))
+##Clearly still an issue, fetal sex will be but into the linear regression model
+```
+

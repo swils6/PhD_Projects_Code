@@ -1,0 +1,101 @@
+---
+title: "RandomSampling"
+author: "SLW"
+date: "March 20, 2017"
+output: 
+  html_document: 
+    keep_md: yes
+---
+
+Load Packages
+```{r LOAD PACKAGES, include=FALSE,results='hide'}
+#source("https://bioconductor.org/biocLite.R")
+#biocLite('dplyr')
+  library(Rcpp)
+  library(methylumi)
+  library(lumi)
+  library(minfi)
+  library(gplots)
+  library(reshape2)
+  library(reshape)
+  library(ggplot2)
+  library(RColorBrewer)
+  library(gridExtra)
+  library(grid)
+  library(MASS)
+  library(limma)
+  library(plyr)
+  library(dplyr)
+```
+
+```{r Load Data}
+memory.limit(10000000000000)
+setwd('Z:/ROBLAB1 coredata-databases/1 Samantha DATA Folder/PROJECTS/DNAmProfiling_PE_IUGR_2017')
+
+##Read in phenotype data
+des<-read.csv('CoX_Samples_2017.csv',header=T)
+for (i in 1:nrow(des)){
+  des$Row[i]<-paste(substr(des[i,"Sentrix_Position"], start=1, stop=3))
+}
+des$Row<- as.factor(des$Row)
+str(des)
+des$Sentrix_ID<-as.factor(des$Sentrix_ID)
+des$GA<-as.numeric(des$GA)
+
+##As IUGR is not fully represented in all 6 row positions, I group rows into levels 1,2,and 3 on the microarray
+des$row_grouped<-revalue(des$Row,c("R01"="1","R02"="1","R03"="2","R04"="2","R05"="3",
+                                   "R06"="3"))
+des$row_grouped<-as.numeric(des$row_grouped)
+rownames(des)<-des$ParticipantID
+
+##Loading in DNAm Data- DNAm measured on the Illumina 450K array
+load('CoxCohort.fnorm_Jan2016.RData')
+Data<-exprs(PROJECT.fun)
+dim(Data)
+
+Data<-as.data.frame(Data)
+Data$COX_9801<-Data$CPX_9801
+Data$CPX_9801<-NULL
+Data$COX_11387<-Data$COX_11378
+Data$COX_11378<-NULL
+Data<-as.matrix(Data)
+
+all(colnames(Data)==rownames(des))##FALSE
+Data<-Data[,rownames(des)]
+all(colnames(Data)==rownames(des))##TRUE
+```
+
+Question: Of the 1703 EOPE differentially methylated sites in the discvoery cohort, 599 (35.1%) validated in the validation cohort. Is this more than we would expect by chance?
+
+39 probes met both FDR and Delta beta thresholds in both cohorts, is this more than we would expect by chance?
+
+To look into this I will sample 1703 random CpG sites from the validation cohort, run the linear model, and record how many validate, 1000 times. Then I will compare this average to the actual number of hits that validated to determine if it is more than we would expect by chance.
+
+```{r}
+##Take a rondom 1703 probes from the Validation cohort data, run a linear model correcting for fetal sex
+random<-function(A){
+  B<-A[sample(440093,replace=TRUE),]
+  lapply(1:nrow(B), function(CpG){
+  pheno<-des
+  pheno$Mval<-B[CpG,]
+  model_hits<-lm(Mval~GRP+Sex, data=pheno)
+  coef(summary(model_hits))[2,4]}) ##pulls row 2, column 4 corresponds to EOPEvsPreT (Row 2), p-values (Column 4)
+}
+
+##Perform 1000 iterations of random sampling and linear modelling
+p.vals<-as.vector(replicate(1000,random(Data))) ##This will run the random function 1000 times
+
+##For each column in p.vals, how many meet nominal p<0.05
+Sig<-as.vector(colSums(p.vals<0.000001))
+
+##Number of hits that were actually validated in the data
+PH<-as.numeric(38)
+
+##Compare the number of "validated" hits in the random sampling the the actual number of validated hits. Are they significantly different.
+#Source code- Adapted from Rachel Edgar
+perm_num<-1000 ##Number of iterations
+sum(Sig>PH) + 1/(perm_num + 1)##p=0.000999001
+
+##Yes the number of validated hits we obtain in the analysis is singificantly more than we expect by chance. 
+```
+

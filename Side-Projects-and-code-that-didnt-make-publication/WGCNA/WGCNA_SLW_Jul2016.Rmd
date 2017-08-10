@@ -1,0 +1,974 @@
+---
+title: "WGCNA"
+author: "Sam(semi-adapted from Rachel Edgar, Chaini Konwar,Nicole Gladish and Steve Horvath's)"
+date: "Thursday, May 26, 2016"
+output: html_document
+---
+```{r Load Packages}
+#source("http://bioconductor.org/biocLite.R")
+#biocLite(c("AnnotationDbi", "impute", "GO.db", "preprocessCore"))
+library(limma)
+library(rtracklayer)
+library(lumi)
+library(impute)
+library(GO.db)
+library(preprocessCore)
+#install.packages("WGCNA")
+#library(openssl)
+#library(Rcpp)
+library(fastcluster)
+library(WGCNA)
+#library(nleqslv)
+library(minfi)
+library(methylumi)
+library(sva)
+library(survival)
+library(genefilter)
+#library(gplots)
+library(reshape2)
+library(ggplot2)
+library(RColorBrewer)
+#library(gridExtra)
+library(grid)
+library(MASS)
+library(limma)
+#library(compare)
+library(plyr)
+```
+
+```{r Load Filtered Project and des file}
+memory.limit(15000000000000)
+setwd("Z:/ROBLAB1 coredata-databases/1 Samantha DATA Folder/PROJECTS/PE_IUGR_Array/Robinson Cohort")
+
+load('PROJECT.fnorm_Jan2016.RData')
+Data<-exprs(PROJECT.fun)
+dim(Data)##102 samples
+
+des<-read.csv('Design_matrix_WPR_2016_ConSplit.csv', header=T)
+rownames(des)<-des$ParticipantID
+dim(des)##102 samples
+
+all(colnames(Data)==rownames(des))##FALSE
+Data<-Data[,rownames(des)]
+all(colnames(Data)==rownames(des))##TRUE
+
+rm<-c("PL21","PL21r","PL64","PL64r1","PM139","PM139r1","PM72","PM72r")
+Data<-Data[,-which(colnames(Data) %in% rm)]
+dim(Data)
+
+des<-des[-which(rownames(des) %in% rm),]
+dim(des)
+des$group<-droplevels(des$group)
+str(des)
+
+all(colnames(Data)==rownames(des))##TRUE
+
+##Row
+for (i in 1:nrow(des)){
+  des$Row[i]<-paste(substr(des[i,"Sentrix_Position"], start=1, stop=3))
+}
+des$Row<- as.factor(des$Row)
+str(des)
+
+##Row grouped- as IUGR is not fully represented in all 6 row positions
+des$row_grouped<-revalue(des$Row,c("R01"="1","R02"="1","R03"="2","R04"="2","R05"="3",
+                                   "R06"="3"))
+des$row_grouped<-as.numeric(des$row_grouped)
+
+str(des) #only things with numerical value should be numbers ie. ga & row, col, otherwise we give order to categories that have no relative order
+des$Sentrix_ID<-factor(des$Sentrix_ID)
+des$BW<-as.numeric(des$BW)
+des$PW<-as.numeric(des$PW)
+des$row_grouped<-as.factor(des$row_grouped)
+
+sum(is.na(Data))##0
+sum(is.infinite(Data))##65
+
+##get rid of infinite values
+impute.med.Inf <- function(x) replace(x, is.infinite(x), median(x, na.rm = TRUE))
+Data<-impute.med.Inf(Data)
+```
+
+```{r Making sure SNP CpGs removed}
+PROJECT.rs <- PROJECT.fun[substring(featureNames(PROJECT.fun), 1, 2) == "rs", ]
+dim(PROJECT.rs) #0 features 102 samples
+```
+
+```{r M values extraction}
+WGCNA_mVal <- as.data.frame(Data)
+dim(WGCNA_mVal) #441093 94
+
+all(colnames(WGCNA_mVal)==rownames(des))##TRUE
+```
+
+```{r Regress out the co-variates using the residuals}
+## remove samples with missing meta data as can not calculate a residual for them (Using 175 samples for WGCNA)
+str(des)
+des$PW <- NULL
+des$F_PL<-NULL
+des$PL_length<-NULL
+des$PL_breadth<-NULL
+des$Lgth_Bdth<-NULL
+des$Ethnicity<-NULL
+
+mVal_complete<-WGCNA_mVal[,which(colnames(WGCNA_mVal)%in%rownames(des))] 
+dim(mVal_complete) #441093 94 
+des<- des[match(rownames(des),colnames(mVal_complete)),]
+
+# Impute missing mvalues
+imputeMedianv3<-function(x) apply(x, 1, function(x){x[is.na(x)]<-median(x, na.rm=T); x}) #impute with row mean
+Mval_imputed<-t(imputeMedianv3(mVal_complete))
+head(Mval_imputed)
+
+avebeta.lm<-lapply(1:nrow(Mval_imputed), function(x){
+  lm(unlist(Mval_imputed[x,])~as.numeric(des$GA)+as.factor(des$Sex))}) # runs the betas through linear model-warning takes sometime
+##object.size(avebeta.lm)##Checks the size of the object- It's huge
+head(avebeta.lm[[1]])##Check and make sure residuals are in the lm
+
+#save(avebeta.lm, file='avebeta_lm_Jul2016.RData')
+
+#load('avebeta_lm_Jul2016.RData')
+
+#residuals<-lapply(avebeta.lm, function(x)residuals(summary(x)))
+residuals<-lapply(avebeta.lm, function(x)residuals(x))
+#residuals<-residuals(avebeta.lm[[1]])
+residuals<-do.call(rbind, residuals)
+adj.residuals<-residuals+matrix(apply(Mval_imputed, 1, mean), nrow=nrow(residuals), ncol=ncol(residuals))
+dim(adj.residuals)##441093 94, just doesn't look like it has the rownames
+rownames(adj.residuals)<-rownames(Mval_imputed)
+head(adj.residuals)
+
+PEIUGR_covar_adjusted_mval<-adj.residuals
+
+save(PEIUGR_covar_adjusted_mval, file="PEIUGR_mvalues_adjusted_covariates_Jul2016.RData")
+
+```
+
+Sanity Check that there are no associations with adjusted covariates
+```{r Sanity Check 1}
+load("PEIUGR_mvalues_adjusted_covariates_Jul2016.RData")
+
+# lm GA
+Age_lm_unadjusted<-sapply(1:nrow(Mval_imputed), function(CpG){
+  x<-lm(Mval_imputed[CpG,]~des$GA)
+  summary(x)$coefficients[2,"Pr(>|t|)"]})
+
+Age_lm_adjusted<-sapply(1:nrow(PEIUGR_covar_adjusted_mval), function(CpG){
+  x<-lm(PEIUGR_covar_adjusted_mval[CpG,]~des$GA)
+  summary(x)$coefficients[2,"Pr(>|t|)"]})
+
+# t.test gender
+sex_T_unadjusted<-sapply(1:nrow(Mval_imputed), function(CpG){
+  x<-t.test(Mval_imputed[CpG,]~as.factor(des$Sex))
+  x$p.value})
+
+sex_T_adjusted<-sapply(1:nrow(PEIUGR_covar_adjusted_mval), function(CpG){
+  x<-t.test(PEIUGR_covar_adjusted_mval[CpG,]~as.factor(des$Sex))
+  x$p.value})
+
+save(Age_lm_unadjusted,Age_lm_adjusted, 
+     sex_T_unadjusted, sex_T_adjusted, file="Pvalues_adjusted_unadjusted.RData")
+
+## plot the p value distributions
+pvalue_dist<-data.frame(CpG=rep(c(rownames(PEIUGR_covar_adjusted_mval),rownames(Mval_imputed)),times=4), 
+                        Nominal_P=c(Age_lm_adjusted, Age_lm_unadjusted, 
+                                    sex_T_adjusted, sex_T_unadjusted),
+                        Methylation_values=rep(rep(c("Adjusted","Unadjusted"), each=nrow(Mval_imputed)), times=4),
+                        Covariate=rep(c("Gestational Age","Fetal Sex"), each=nrow(Mval_imputed)*2))
+
+pvalue_dist$Methylation_values<-factor(pvalue_dist$Methylation_values, levels=c("Unadjusted", "Adjusted"))
+
+ggplot(pvalue_dist, aes(Nominal_P))+geom_histogram(fill="grey90", color="black")+theme_bw()+xlab("Nominal P Value")+ facet_grid(Methylation_values~Covariate, scales="free_y")
+```
+
+# Weighted Gene Co-expression (co-methylation) Network Analysis
+
+From the WGCNA online tutorial "Dealing with large data sets: block-wise network construction and
+module detection"
+
+# load and transfrom data
+```{r load and transform data}
+load("PEIUGR_mvalues_adjusted_covariates_Jul2016.RData")
+datMeth<-t(PEIUGR_covar_adjusted_mval)
+```
+#Automatic block-wise network construction and module detection
+
+
+##Choosing the soft-thresholding power: analysis of network topology
+
+Here we define the power to which the correlation matrix values are taken to, to form a adjacency matrix. This power value deflates the importance of weakly correlated CpGs and increases the weight of highly correlated CpGs. The default is an unsigned network but for a signed network which will also devalue negativly correlated CpGs, and I don't know if this makes sense for methylation. Maybe it does?
+But here we are calculating the B in this formula 0.5+0.5 * cor^B . Where cor is the CpG-CpG correlation. The resulting value once the power (B) is chosen is the adjacency  value for two CpGs.
+
+```{r soft thresholding and power determining}
+# Choose a set of soft-thresholding powers
+powers = c(c(1:10), seq(from = 12, to=20, by=2))
+# Call the network topology analysis function
+sft = pickSoftThreshold(datMeth, powerVector = powers, verbose = 5,networkType = "sign")
+#In the output look at the high Rsquare measure and you want a negative slope as this indicates that hub genes are less frequent than lowly connected genes
+save(sft, file="sft_PEIUGR.RData")
+load("sft_PEIUGR.RData")
+
+#plot the results
+sizeGrWindow(9, 5)
+par(mfrow = c(1,2))
+cex1 = 0.9
+# Scale-free topology fit index as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+main = paste("Scale independence"), ylim=c(0, 1));
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+labels=powers,cex=cex1,col="red");
+# this line corresponds to using an R^2 cut-off of h
+abline(h=0.70,col="red")
+# Mean connectivity as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+```
+We need to consider power values that result in approximate scale free topology, i.e high scale free topology fitting index R^2. In practice, we use the lowest value where the curve starts to saturate. It seems like a soft threshold of 18 will be appropriate for this analysis. Howeever, the R^2 still is bit low (<0.8). I choose power beta=18 since this where the curve reaches a saturation point. An advantage of weighted networks is that they are highly robust with regard to the power beta. 
+
+#Block-wise network construction and module detection
+```{r blockwise module detection}
+##I chose 10 as it is the first power where the data plateaus off evenly. 4 seemed a bit small and the data was a little more variable afterwards.
+bwnet = blockwiseModules(datMeth, maxBlockSize = 20000,
+                         power = 10, TOMType = "signed", corType="bicor", minModuleSize = 30,
+                         reassignThreshold = 0, mergeCutHeight = 0.25,
+                         numericLabels = TRUE,
+                         saveTOMs = TRUE,
+                         saveTOMFileBase = "PEIUGR_TOM_blockwise",
+                         verbose = 3)
+#takes time ..be patient
+str(bwnet) #23 blocks but 74 modules??
+bwnet$dendrogram[[23]] #any random block/module
+```
+#We now save the module assignment and module eigengene information necessary for subsequent analysis.
+
+```{r saving modules}
+moduleLabels = bwnet$colors
+moduleColors = labels2colors(bwnet$colors)
+MEs = bwnet$MEs;
+geneTree = bwnet$dendrograms[[1]];
+save(MEs, moduleLabels, moduleColors, geneTree,bwnet,
+file = "PE_IUGR-networkConstruction-blockwise.RData")
+```
+
+# Associate modules with traits
+```{r Correlation with batch included}
+load("PEIUGR_mvalues_adjusted_covariates_Jul2016.RData")
+datMeth<-t(PEIUGR_covar_adjusted_mval)
+load("PE_IUGR-networkConstruction-blockwise.RData")
+
+meta_complete<-des[which(rownames(des)%in%colnames(PEIUGR_covar_adjusted_mval)),]
+meta_complete<-meta_complete[match(colnames(PEIUGR_covar_adjusted_mval), rownames(des)),]
+
+##All datTraits must be numeric
+des$group_no<-des$group
+des$group_no<-revalue(des$group_no,c("EOPE"=1,"IUGR"=2,"LOPE"=3,"PreT"=4,"Term"=5))
+des$group_no<-as.numeric(des$group_no)
+
+des$Sex_no<-des$Sex
+des$Sex_no<-revalue(des$Sex_no,c("FEMALE"=1,"MALE"=2))
+des$Sex_no<-as.numeric(des$Sex_no)
+
+des$Sentrix_ID<-as.numeric(des$Sentrix_ID)
+des$row_grouped<-as.numeric(des$row_grouped)
+des$Plate<-as.numeric(des$Plate)
+
+datTraits<-des[c("group_no","GA","MA","Sex_no","BW_SD","Sentrix_ID","Plate","row_grouped")]
+
+# Define numbers of genes and samples
+nGenes = ncol(datMeth);
+nSamples = nrow(datMeth);
+# Recalculate MEs with color labels. ModuleEigengenes explain the maximum proportion of the variance in a module.
+MEs0 = moduleEigengenes(datMeth, moduleColors)$eigengenes
+str(MEs0)
+MEs = orderMEs(MEs0)
+
+#correlation of modules with traits
+moduleTraitCor = cor(MEs, datTraits, use = "p");
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples);
+```
+
+## plot
+```{r Module trait correlation batch effects, fig.height=18,fig.width=18}
+sizeGrWindow(10,6)
+# Will display correlations and their p-values
+textMatrix = paste(signif(moduleTraitCor, 2), "\n(",
+signif(moduleTraitPvalue, 1), ")", sep = "");
+dim(textMatrix) = dim(moduleTraitCor)
+par(mar = c(8, 11.5, 3, 3));
+# Display the correlation values within a heatmap plot
+labeledHeatmap(Matrix = moduleTraitCor,
+xLabels = names(datTraits),
+yLabels = names(MEs),cex.lab = 0.65,
+ySymbols = names(MEs),
+colorLabels = FALSE,
+colors = blueWhiteRed(50),
+textMatrix = textMatrix,
+setStdMargins = FALSE,
+cex.text = 0.1,
+zlim = c(-1,1),
+main = paste("Module-trait relationships"))
+```
+
+##Unfortunately we do not have the computing power to do the manual tree cutting
+```{r determine module correlation}
+#plot relationship between eigengenes and the trait. Module eigengenes can be used to identify whether two modules are correlated and hence, consider merging instead if correlation of MEs is high. In this the leaves correspond to module eigenegenes and corresponding correlations.
+plotEigengeneNetworks(MEs,"",marDendro=c(0,4,1,2))
+marHeatmap=c(3,4,1,2,cex.lab=0.8,xlabelsAngle=90)
+#looks like we needed a merge threshold of 0.7
+mergingThresh = 0.4
+# automatically merge highly correlated modules
+merge=mergeCloseModules(datMeth,moduleColors,
+cutHeight=mergingThresh)
+# resulting merged module colors
+MergedmoduleColor = merge$colors
+# eigengenes of the newly merged modules:
+MergedMEs = merge$newMEs #51 modules
+
+#correlation of modules with traits
+NewmoduleTraitCor = cor(MergedMEs, datTraits, use = "p");
+NewmoduleTraitPvalue = corPvalueStudent(NewmoduleTraitCor, nSamples);
+```
+
+## plot
+```{r Plot correlated and merged modules,fig.height=18,fig.width=18}
+sizeGrWindow(10,6)
+# Will display correlations and their p-values
+textMatrix = paste(signif(NewmoduleTraitCor, 2), "\n(",
+signif(NewmoduleTraitPvalue, 1), ")", sep = "");
+dim(textMatrix) = dim(NewmoduleTraitCor)
+par(mar = c(8, 11.5, 3, 3));
+# Display the correlation values within a heatmap plot
+labeledHeatmap(Matrix = NewmoduleTraitCor,
+xLabels = names(datTraits),
+yLabels = names(MergedMEs),cex.lab.y = 0.65,
+ySymbols = names(MergedMEs),
+colorLabels = FALSE,
+colors = blueWhiteRed(50),
+textMatrix = textMatrix,
+setStdMargins = FALSE,
+cex.text = 0.3,
+zlim = c(-1,1),
+main = paste("Module-trait relationships"))
+```
+##Gene relationship to trait and important modules: Gene Significance and Module
+#Membership. 
+##We quantify associations of individual genes with our trait of interest (weight) by defining Gene Significance GS as (the absolute value of) the correlation between the gene and the trait. For each module, we also define a quantitative measure of module membership MM as the correlation of the module eigengene and the gene expression profile. This allows us to quantify the similarity of all genes on the array to every module.
+
+```{r What is in the modules}
+head(NewmoduleTraitCor)##Correlation
+save(NewmoduleTraitCor,file='NewmoduleTraitCor_Roblab_Aug2016.txt')
+
+head(NewmoduleTraitPvalue)##P-values
+save(NewmoduleTraitPvalue,file='NewmoduleTraitPvalue_Roblab_Aug2016.txt')
+```
+
+### Inspecting Probes Associated with Significant WGCNA Clusters
+```{r Gene significance and module membership,fig.height=18,fig.width=18}
+##calculate the module membership values:(aka. module eigengene based connectivity kME)
+datKME=signedKME(datMeth, MergedMEs)
+Group=as.data.frame(datTraits$group)
+GS.Group = as.numeric(cor(datMeth,Group,use="p"))
+
+#Intramodular analysis: identifying genes with high GS and MM
+#Using the GS and MM measures, we can identify genes that have a high significance for Group as well as high module membership in interesting modules. We plot a scatterplot of Gene Significance vs. Module Membership in select modules...
+colorOfColumn=substring(names(datKME),4)
+par(mfrow = c(2,2))
+selectModules=c("darkmagenta", "brown","lightsteelblue") #modulesofinterest
+par(mfrow=c(2,length(selectModules)/2))
+for (module in selectModules) {
+column = match(module,colorOfColumn)
+restModule=moduleColors==module
+verboseScatterplot(datKME[restModule,column],GS.Group[restModule],
+xlab=paste("Module Membership ",module,"module"),ylab="GS.Group",
+main=paste("kME.",module,"vs. GS"),col=module)}
+```
+
+```{r Gene ontology,fig.height=18,fig.width=18}
+# Read in the probe annotation
+GeneAnnotation<-read.table(file="Uber annotation.txt",header=T)
+str(GeneAnnotation)
+# Match probes in the data set to those of the annotation file
+probes = colnames(datMeth)
+probes2annot = match(probes,GeneAnnotation$IlmnID)
+
+##Maps probe to gene name
+allLLIDs = GeneAnnotation$IlmnID[probes2annot]
+
+##Picking out interesting modules
+intModules = c("darkmagenta", "brown","lightsteelblue")
+for (module in intModules)
+{
+# Select module probes
+modGenes = (moduleColors==module)
+# Get their entrez ID codes
+modLLIDs = allLLIDs[modGenes];
+# Write them into a file
+fileName = paste("LocusLinkIDs_InterestingModules", module, "PEIUGR_InterestingModules_Aug2016.txt", sep="");
+write.table(as.data.frame(modLLIDs), file = fileName,
+row.names = FALSE, col.names = FALSE)
+}
+
+# data frame with gene significances (cor with the traits)
+datGroup.Traits=data.frame(cor(datMeth,datTraits,use="p"))
+names(datGroup.Traits)=paste("cor",names(datGroup.Traits),sep=".")
+datOutput=data.frame(ProbeID=colnames(datMeth),
+GeneAnnotation[probes2annot,],moduleColors,datKME,datGroup.Traits)
+# save the results in a comma delimited file
+write.table(datOutput,"PEIUGRResults.csv",row.names=F,sep=",")
+str(datOutput)
+```
+
+
+### Gene Network Visualization on WGCNA Clusters - Cytoscape
+```{r Network Visualization Brown Module}
+##Brown Modules
+BrownModule<-read.table('LocusLinkIDs_InterestingModulesbrownPEIUGR_InterestingModules_Aug2016.csv',header=T)
+rownames(BrownModule)<-BrownModule$Probe
+
+##Isolate only the brown probes from data
+BrownDat<-datMeth[,colnames(datMeth) %in% rownames(BrownModule)]
+dim(BrownDat)##94 samples with 17,185 probe
+
+##Annotation to only the Brown module probes
+Brown_anno<-GeneAnnotation[rownames(GeneAnnotation) %in% colnames(BrownDat),]
+dim(Brown_anno)
+
+##Merge the brown module CpGs with the annotation
+head(BrownModule)
+BrownModule_GeneInfo<-cbind(BrownModule,Brown_anno)
+BrownModule_GeneInfo<-as.data.frame(BrownModule_GeneInfo[,c("Probe","CHR","MAPINFO","UCSC_RefGene_Name","Price.et.al...2012_Gene")])
+rownames(BrownModule_GeneInfo)
+#write.table(BrownModule_GeneInfo,file="BrownModule_GeneInfo.txt")
+
+# Recalculate topological overlap if needed
+TOM = TOMsimilarityFromExpr(BrownDat, power = 10)
+# Read in the annotation file
+annot = BrownModule_GeneInfo;
+# Select modules
+modules = c("brown");
+# Select module probes
+probes = colnames(BrownDat)
+inModule = is.finite(match(moduleColors, modules));
+inModule2<-as.data.frame(inModule)
+rownames(inModule2)<-colnames(datMeth)
+inModule<-subset(inModule2,inModule=="TRUE")##17185 probes
+inModule<-as.logical(inModule$inModule)
+modProbes = probes[inModule];
+modGenes = annot$UCSC_RefGene_Name[match(modProbes, annot$Row.names)];
+# Select the corresponding Topological Overlap
+modTOM = TOM[inModule, inModule];
+dimnames(modTOM) = list(modProbes)
+
+##The nodeAttr must speify the module colour- since I am only putting in Brown, so I will create a matrix that says brown 17185 times
+
+moduleColours2<-as.data.frame(moduleColors)
+rownames(moduleColours2)<-colnames(datMeth)
+moduleColors3<-subset(moduleColours2,moduleColors=="brown")
+moduleColors4<-as.character(moduleColors3$moduleColors)
+
+# Export the network into edge and node list files Cytoscape can read
+cyt = exportNetworkToCytoscape(modTOM,
+  edgeFile = paste("CytoscapeInput-edges-brown",".txt", sep=""),
+  nodeFile = paste("CytoscapeInput-nodes-brown",".txt", sep=""),
+  weighted = TRUE,
+  threshold = 0.02,
+  nodeNames = modProbes,
+  altNodeNames = modGenes,
+  nodeAttr = moduleColors4[inModule])
+```
+
+##Fixing files for methylation array data:
+```{r fixing cytoscape files for DNAm data Brown Module, eval=FALSE}
+# Removing the sites which have no associated gene
+# Removing the sites which have no associated gene
+edgeFile = read.table("CytoscapeInput-edges-brown.txt", fill = TRUE, header = TRUE)##Often read in improperly- I reorganized in excel then read in
+edgeFile[edgeFile==""] <- NA
+edgeFile <- na.omit(edgeFile)
+
+# Making the gene name columns have only one name - first separating the connected gene list into separate columns in own data.frame:
+foo <- data.frame(do.call('rbind', strsplit(as.character(edgeFile$toAltName),';',fixed=TRUE)))
+
+# Replacing the column in the edgeFile with the first column of the foo dataframe
+edgeFile$toAltName <- foo$X1
+
+#Repeat for other columns:
+foo <- data.frame(do.call('rbind', strsplit(as.character(edgeFile$fromAltName),';',fixed=TRUE)))
+edgeFile$fromAltName <- foo$X1
+head(edgeFile)
+
+edgeFile <- edgeFile[ -c(1,2,4) ]
+colnames(edgeFile)[1:3] <- c("Connectivity", "Gene1", "Gene2")
+edgeFile <- edgeFile[c(2,3,1)]
+head(edgeFile)
+
+##Write out clean edge file and remove all dated non-genes
+##write.table(edgeFile,file='CytoscapeInput-edges-brown_Cleaned.txt')
+############File does not load fully in excel- I need to figure out how to get rid of the weird dated non-genes
+
+#Removing rows in edge file which have within gene interactions
+edgeFile$Genes <- paste(edgeFile$Gene1, edgeFile$Gene2, sep=":")
+edgeFile<- edgeFile[ order(edgeFile$Genes), ]
+
+##write.table(test,file="test_GeneConnectivity_BrownModule.txt")
+##Removing rows that have weird dates in them
+edgeFile1<-edgeFile[-grep("10-Mar",edgeFile$Gene1),]
+edgeFile1<-edgeFile1[-grep("11-Sep",edgeFile1$Gene1),]
+edgeFile1<-edgeFile1[-grep("9-Sep",edgeFile1$Gene1),]
+edgeFile1<-edgeFile1[-grep("3-Mar",edgeFile1$Gene1),]
+edgeFile1<-edgeFile1[-grep("4-Mar",edgeFile1$Gene1),]
+edgeFile1<-edgeFile1[-grep("9-Mar",edgeFile1$Gene1),]
+
+head(edgeFile1)
+edgeFile1<- edgeFile1[ order(edgeFile1$Gene2), ]
+head(edgeFile1)
+
+edgeFile1<-edgeFile1[-grep("10-Mar",edgeFile1$Gene2),]
+edgeFile1<-edgeFile1[-grep("11-Sep",edgeFile1$Gene2),]
+edgeFile1<-edgeFile1[-grep("9-Sep",edgeFile1$Gene2),]
+edgeFile1<-edgeFile1[-grep("3-Mar",edgeFile1$Gene2),]
+edgeFile1<-edgeFile1[-grep("4-Mar",edgeFile1$Gene2),]
+edgeFile1<-edgeFile1[-grep("9-Mar",edgeFile1$Gene2),]
+head(edgeFile1)
+
+edgeFile1<- edgeFile1[ order(edgeFile1$Gene1), ]
+##write.table(edgeFile,file='CytoscapeInput-edges-brown_Cleaned_ordered.txt')
+
+test <- edgeFile1[,3:4]
+test <- test[order(test$Genes),]
+
+splitmean <- function(test) {
+  s <- split(test, test$Genes)
+  sapply(s, function(x) mean(x$Connectivity) )
+}
+test7 <- as.data.frame(splitmean(test))
+test7$Genes <- rownames(test7)
+foo <- data.frame(do.call('rbind', strsplit(as.character(test7$Genes),':',fixed=TRUE)))
+test7$Gene1 <- foo$X1
+test7$Gene2 <- foo$X2
+test7 <- test7[ -c(2) ]
+colnames(test7)[1] <- c("Connectivity")
+edgeFile <- test7[c(2,3,1)]
+
+#Export file 
+write.table(edgeFile, "PE_IUGR_RobinsonCohort_EdgeFilebrown_Final.txt", sep="\t", row.names=FALSE, quote=FALSE)##Note that this often read in not parsed properly- I just opened in excel and reorganized it
+#####################
+#Now the Node File:
+nodeFile = read.table("CytoscapeInput-nodes-brown.txt", sep="\t", header = TRUE)
+
+# Adding delta beta value column and p-value from linear regression column
+load('ttbeta_all_RobinsonLabCohort.RData')
+probes=nodeFile$nodeName
+rownames(ttbeta_all)##I took the delta betas from my linear model when doing differential DNAm of single CpG sites
+fdat <- ttbeta_all
+fdatp <- fdat[rownames(fdat) %in% probes,] #17185
+fdatp <- fdatp[ order(row.names(fdatp)), ]
+nodeFile<- nodeFile[ order(nodeFile$nodeName), ]
+nodeFile <- cbind(nodeFile, fdatp$PreTvsEOPE)
+
+##Getting associated p-values
+load('tt_EOPEvsPreT_RobinsonCohort.RData')##P-values from linear model when doing differential DNAm of single CpG sites
+LMP <- tt_EOPEvsPreT[rownames(tt_EOPEvsPreT) %in% probes,]##85
+LMP <- LMP[ order(row.names(LMP)), ]
+nodeFile <- cbind(nodeFile, LMP$P.Value)
+
+#Remove probes not associated to a gene
+nodeFile[nodeFile==""] <- NA
+nodeFile <- na.omit(nodeFile) #12166
+
+# Making the gene name columns have only one name - first separating the connected gene list into separate columns in own data.frame:
+foo <- data.frame(do.call('rbind', strsplit(as.character(nodeFile$altName),';',fixed=TRUE)))
+nodeFile$altName <- foo$X1
+
+nodeFile <- nodeFile[ -c(1, 3) ]
+colnames(nodeFile)[1:3] <- c("Gene", "DeltaBeta", "PValue")
+nodeFile<- nodeFile[ order(nodeFile$Gene), ]
+unique(nodeFile$Gene) #4950
+
+##Removing those weird dates again
+nodeFile1<-nodeFile[-grep("03-Mar",nodeFile$Gene),]
+nodeFile1<-nodeFile1[-grep("04-Mar",nodeFile1$Gene),]
+nodeFile1<-nodeFile1[-grep("09-Mar",nodeFile1$Gene),]
+nodeFile1<-nodeFile1[-grep("09-Sep",nodeFile1$Gene),]
+nodeFile1<-nodeFile1[-grep("10-Mar",nodeFile1$Gene),]
+nodeFile1<-nodeFile1[-grep("11-Sep",nodeFile1$Gene),]
+
+head(nodeFile1)
+nodeFile<- nodeFile1[ order(nodeFile1$Gene), ]
+head(nodeFile)
+
+DBNode = nodeFile[,1:2]
+PVNode = nodeFile[,c(1,3)]
+NodeFile <- merge(DBNode, PVNode, by="Gene")
+str(edgeFile)
+str(NodeFile)
+
+#Export file 
+write.table(NodeFile, "NodeFile_Brown_RobinsonLab.txt", sep="\t", row.names=FALSE, quote=FALSE)
+
+##Finding the edges/nodes meeting criteria to hopefully go quicker through cytoscape
+BrownNode<-read.table('NodeFile_Brown_RobinsonLab.txt',header=T)
+head(BrownNode)
+
+##Same thresholds as the DarkMagenta p-value corrected for number of genes in analysis
+##p<0.00001
+Brown_Hubs<-subset(BrownNode,PValue<0.00001)##2980
+Brown_Hubs_DB<-subset(Brown_Hubs,DeltaBeta>abs(0.1))##67
+
+write.table(Brown_Hubs, "NodeFile_Brown_RobinsonLab_PVal.txt", sep="\t", row.names=FALSE, quote=FALSE)
+write.table(Brown_Hubs_DB, "NodeFile_Brown_RobinsonLab_PVal_DB.txt", sep="\t", row.names=FALSE, quote=FALSE)
+
+##EdgeFile
+Brown_edge<-read.table('PE_IUGR_RobinsonCohort_EdgeFilebrown_Final.txt',header=T)
+##Unfortunately I can't subset this down anymore as connectivity will be missing, I can cluster on the top CpG
+```
+
+### Gene Network Visualization on WGCNA Clusters - Cytoscape
+```{r Network Visualization Dark Magenta Module}
+load(ttbeta_all_RobinsonLabCohort.RData)
+##Dark Magenta Module
+DarkMagentaModule<-read.table('LocusLinkIDs_InterestingModulesdarkmagentaPEIUGR_InterestingModules_Aug2016.csv',header=T)
+rownames(DarkMagentaModule)<-DarkMagentaModule$Probe
+
+##Isolate only the brown probes from data
+DarkMagentaDat<-datMeth[,colnames(datMeth) %in% rownames(DarkMagentaModule)]
+dim(DarkMagentaDat)##94 samples with 88 probe
+
+##Annotation to only the Brown module probes
+DarkMagenta_anno<-GeneAnnotation[rownames(GeneAnnotation) %in% colnames(DarkMagentaDat),]
+dim(DarkMagenta_anno)
+
+##Merge the brown module CpGs with the annotation
+head(DarkMagentaModule)
+DarkMagentaModule_GeneInfo<-cbind(DarkMagentaModule,DarkMagenta_anno)
+DarkMagentaModule_GeneInfo<-as.data.frame(DarkMagentaModule_GeneInfo[,c("Probe","CHR","MAPINFO","UCSC_RefGene_Name","Price.et.al...2012_Gene")])
+rownames(DarkMagentaModule_GeneInfo)
+#write.table(DarkMagentaModule_GeneInfo,file="DarkMagentaModule_GeneInfo.txt")
+
+# Recalculate topological overlap if needed
+TOM = TOMsimilarityFromExpr(DarkMagentaDat, power = 10)
+# Read in the annotation file
+annot = DarkMagentaModule_GeneInfo;
+# Select modules
+modules = c("darkmagenta");
+# Select module probes
+probes = colnames(DarkMagentaDat)
+inModule = is.finite(match(moduleColors, modules));
+inModule2<-as.data.frame(inModule)
+rownames(inModule2)<-colnames(datMeth)
+inModule<-subset(inModule2,inModule=="TRUE")##17185 probes
+inModule<-as.logical(inModule$inModule)
+modProbes = probes[inModule];
+modGenes = annot$UCSC_RefGene_Name[match(modProbes, annot$Probe)];
+# Select the corresponding Topological Overlap
+modTOM = TOM[inModule, inModule];
+dimnames(modTOM) = list(modProbes)
+
+##The nodeAttr must speify the module colour- since I am only putting in Brown, so I will create a matrix that says dark magenta 88 times
+
+moduleColours2<-as.data.frame(moduleColors)
+rownames(moduleColours2)<-colnames(datMeth)
+moduleColors3<-subset(moduleColours2,moduleColors=="darkmagenta")
+moduleColors4<-as.character(moduleColors3$moduleColors)
+
+# Export the network into edge and node list files Cytoscape can read
+cyt = exportNetworkToCytoscape(modTOM,
+  edgeFile = paste("CytoscapeInput-edges-darkmagenta",".csv", sep=""),
+  nodeFile = paste("CytoscapeInput-nodes-darkmagenta",".csv", sep=""),
+  weighted = TRUE,
+  threshold = 0.02,
+  nodeNames = modProbes,
+  altNodeNames = modGenes,
+  nodeAttr = moduleColors4[inModule])
+```
+
+##Fixing files for methylation array data:
+```{r fixing cytoscape files for DNAm data Dark Magenta, eval=FALSE}
+# Removing the sites which have no associated gene
+edgeFile = read.table("CytoscapeInput-edges-darkmagenta.txt", fill = TRUE, header = TRUE)##1116obs 6 var
+edgeFile[edgeFile==""] <- NA
+edgeFile <- na.omit(edgeFile)
+
+# Making the gene name columns have only one name - first separating the connected gene list into separate columns in own data.frame:
+foo <- data.frame(do.call('rbind', strsplit(as.character(edgeFile$toAltName),';',fixed=TRUE)))
+
+# Replacing the column in the edgeFile with the first column of the foo dataframe
+edgeFile$toAltName <- foo$X1
+
+#Repeat for other columns:
+foo <- data.frame(do.call('rbind', strsplit(as.character(edgeFile$fromAltName),';',fixed=TRUE)))
+edgeFile$fromAltName <- foo$X1
+head(edgeFile)
+
+edgeFile <- edgeFile[ -c(1,2,4) ]
+colnames(edgeFile)[1:3] <- c("Connectivity", "Gene1", "Gene2")
+edgeFile <- edgeFile[c(2,3,1)]
+head(edgeFile)
+
+#Removing rows in edge file which have within gene interactions
+edgeFile$Genes <- paste(edgeFile$Gene1, edgeFile$Gene2, sep=":")
+edgeFile<- edgeFile[ order(edgeFile$Genes), ]
+
+##No weird dates so no need to remove any probes
+test <- edgeFile[,3:4]
+test <- test[order(test$Genes),]
+
+splitmean <- function(test) {
+  s <- split(test, test$Genes)
+  sapply(s, function(x) mean(x$Connectivity) )
+}
+test7 <- as.data.frame(splitmean(test))
+test7$Genes <- rownames(test7)
+foo <- data.frame(do.call('rbind', strsplit(as.character(test7$Genes),':',fixed=TRUE)))
+test7$Gene1 <- foo$X1
+test7$Gene2 <- foo$X2
+test7 <- test7[ -c(2) ]
+colnames(test7)[1] <- c("Connectivity")
+edgeFile <- test7[c(2,3,1)]
+
+#Export file 
+write.table(edgeFile, "PE_IUGR_RobinsonCohort_EdgeFiledarkmagenta_Final.txt", sep="\t", row.names=FALSE, quote=FALSE)
+#####################
+#Now the Node File:
+nodeFile = read.table("CytoscapeInput-nodes-darkmagenta.txt", sep="\t", header = TRUE)##Needed to go into excel and move over the module colour in cases where no gene was annotated
+head(nodeFile)##85
+probes=nodeFile$nodeName
+
+# Adding delta beta value column and p-value from linear regression column
+rownames(ttbeta_all)##I took the delta betas from my linear model when doing differential DNAm of single CpG sites
+fdat <- ttbeta_all
+fdatp <- fdat[rownames(fdat) %in% probes,] #85
+fdatp <- fdatp[ order(row.names(fdatp)), ]
+nodeFile<- nodeFile[ order(nodeFile$nodeName), ]
+nodeFile <- cbind(nodeFile, fdatp$PreTvsEOPE)
+
+##Getting associated p-values
+load(tt_EOPEvsPreT_RobinsonCohort.RData)##P-values from linear model when doing differential DNAm of single CpG sites
+LMP <- tt_EOPEvsPreT[rownames(tt_EOPEvsPreT) %in% probes,]##85
+LMP <- LMP[ order(row.names(LMP)), ]
+nodeFile <- cbind(nodeFile, LMP$P.Value,LMP$adj.P.Val)
+
+#Remove probes not associated to a gene
+nodeFile[nodeFile==""] <- NA
+nodeFile <- na.omit(nodeFile) #78
+
+# Making the gene name columns have only one name - first separating the connected gene list into separate columns in own data.frame:
+foo <- data.frame(do.call('rbind', strsplit(as.character(nodeFile$altName),';',fixed=TRUE)))
+nodeFile$altName <- foo$X1
+
+nodeFile <- nodeFile[ -c(1, 3) ]
+colnames(nodeFile)[1:4] <- c("Gene", "DeltaBeta", "PValue","FDR")
+nodeFile<- nodeFile[ order(nodeFile$Gene), ]
+unique(nodeFile$Gene) #67
+
+DBNode = nodeFile[,1:2]
+PVNode = nodeFile[,c(1,3,4)]
+NodeFile <- merge(DBNode, PVNode, by="Gene")
+str(edgeFile)
+str(NodeFile)
+
+#Export file 
+write.table(NodeFile, "NodeFile_DarkMagenta_RobinsonLab.txt", sep="\t", row.names=FALSE, quote=FALSE)
+```
+
+### WGCNA Cytoscape Image
+
+To input files made above into cytoscape: 
+
+EdgeFile
+- file -> import -> network -> file 
+- Select your edge file. 
+- Source interaction = gene 1, interaction type leave blank, target interaction = gene 2
+- Highlight your connectivity score column so that its blue. 
+- Select OK.
+
+NodeFile
+- file -> import -> table -> file 
+- Select your node file.
+- Under "Select Network Collection" -> Network Collection -> select your edge file from the drop down menu to ensure your node file is matched to the right edge file.
+- Select OK
+
+To make visualizations simpler I only wanted to include the most influential genes. These genes survived the following filters (placed in cytoscape):
+
+- All probes average delta beta values are greater than 5%
+- All connections with a score < 0.05 were removed. 
+- All nodes representing a gene which had an average p-value (from probes representing that node) of < 0.05 from the linear regression analysis were removed.
+- Edge thickness represents a connectivity score ranging from 0.05-max (thin - thick).
+- Node color represents average p-value scores from the linear regression analysis on a scale of 0-0.05 (dark - white).
+
+```{r Clustering on the modules}
+##Brown
+BrownModule<-read.table('LocusLinkIDs_InterestingModulesbrownPEIUGR_InterestingModules_Aug2016.csv',header=T)
+rownames(BrownModule)<-BrownModule$Probe
+##17185 CpG
+
+##Isolate only the brown probes from data
+BrownDat<-datMeth[,colnames(datMeth) %in% rownames(BrownModule)]
+dim(BrownDat)##94 samples with 17,185 probe
+##Transpose for clustering
+BrownDat_t<-t(BrownDat)
+
+##Colour for groups
+(v.grp.col<-as.vector(des$group))
+(v.grp.col<-gsub("Term","black",v.grp.col))
+(v.grp.col<-gsub("PreT","darkred",v.grp.col))
+(v.grp.col<-gsub("LOPE","blue",v.grp.col))
+(v.grp.col<-gsub("IUGR","chocolate",v.grp.col))
+(v.grp.col<-gsub("EOPE","lightseagreen",v.grp.col))
+v.grp.col
+
+library(ape)
+mvalues =BrownDat_t
+D = dist(t(mvalues))
+clust = hclust(D,method="complete")
+plot(as.phylo(clust), lab4ut="axial", type = "unrooted", no.margin = TRUE, edge.width=2,cex=0.6,tip.col=v.grp.col)
+legend("bottomright",c("Term","PreT","LOPE","IUGR","EOPE"),fill=c("black","darkred","blue","chocolate","lightseagreen"))
+
+##Dark Magenta
+DarkMagentaModule<-read.table('LocusLinkIDs_InterestingModulesdarkmagentaPEIUGR_InterestingModules_Aug2016.csv',header=T)
+rownames(DarkMagentaModule)<-DarkMagentaModule$Probe
+
+##Isolate only the brown probes from data
+DarkMagentaDat<-datMeth[,colnames(datMeth) %in% rownames(DarkMagentaModule)]
+dim(DarkMagentaDat)##94 samples with 88 probe
+DarkMagentaDat_t<-t(DarkMagentaDat)
+
+library(ape)
+mvalues =DarkMagentaDat_t
+D = dist(t(mvalues))
+clust = hclust(D,method="complete")
+plot(as.phylo(clust), lab4ut="axial", type = "unrooted", no.margin = TRUE, edge.width=2,cex=0.6,tip.col=v.grp.col)
+legend("bottomright",c("Term","PreT","LOPE","IUGR","EOPE"),fill=c("black","darkred","blue","chocolate","lightseagreen"))
+```
+
+```{r Clustering on top module CpG sites}
+head(ttbeta_all)
+LM_Data<-ttbeta_all[,c("PreTvsEOPE","P.Value","adj.P.Val")]
+rownames(LM_Data)
+
+##BrownModule
+Brown_LM<-as.data.frame(LM_Data[which(rownames(LM_Data) %in% rownames(BrownDat_t)),])
+head(Brown_LM)
+
+Brown_LM<-subset(Brown_LM,PreTvsEOPE>abs(0.1) & adj.P.Val<0.05)##101 sites
+
+BrownDat_101<-BrownDat_t[which(rownames(BrownDat_t) %in% rownames(Brown_LM)),]
+
+library(ape)
+mvalues =BrownDat_101
+D = dist(t(mvalues))
+clust = hclust(D,method="complete")
+plot(as.phylo(clust), lab4ut="axial", type = "unrooted", no.margin = TRUE, edge.width=2,cex=0.6,tip.col=v.grp.col)
+legend("bottomright",c("Term","PreT","LOPE","IUGR","EOPE"),fill=c("black","darkred","blue","chocolate","lightseagreen"))
+
+##Dark Magenta
+DarkMagenta_LM<-as.data.frame(LM_Data[which(rownames(LM_Data) %in% rownames(DarkMagentaDat_t)),])
+head(DarkMagenta_LM)
+
+DarkMagenta_LM<-subset(DarkMagenta_LM,adj.P.Val<0.05)##30 sites
+
+DarkMagentaDat_30<-DarkMagentaDat_t[which(rownames(DarkMagentaDat_t) %in% rownames(DarkMagenta_LM)),]
+
+library(ape)
+mvalues =DarkMagentaDat_30
+D = dist(t(mvalues))
+clust = hclust(D,method="complete")
+plot(as.phylo(clust), lab4ut="axial", type = "unrooted", no.margin = TRUE, edge.width=2,cex=0.6,tip.col=v.grp.col)
+legend("bottomright",c("Term","PreT","LOPE","IUGR","EOPE"),fill=c("black","darkred","blue","chocolate","lightseagreen"))
+
+##Clustering on Hubs-DarkMagenta TNK2and LGR6
+nodeFile = read.table("CytoscapeInput-nodes-darkmagenta.txt", sep="\t", header = TRUE)##Needed to go into excel and move over the module colour in cases where no gene was annotated
+head(nodeFile)##85
+probes=nodeFile$nodeName
+
+# Adding delta beta value column and p-value from linear regression column
+rownames(ttbeta_all)##I took the delta betas from my linear model when doing differential DNAm of single CpG sites
+fdat <- ttbeta_all
+fdatp <- fdat[rownames(fdat) %in% probes,] #85
+fdatp <- fdatp[ order(row.names(fdatp)), ]
+nodeFile<- nodeFile[ order(nodeFile$nodeName), ]
+nodeFile <- cbind(nodeFile, fdatp$PreTvsEOPE)
+
+LMP <- tt_EOPEvsPreT[rownames(tt_EOPEvsPreT) %in% probes,]##85
+LMP <- LMP[ order(row.names(LMP)), ]
+nodeFile <- cbind(nodeFile, LMP$P.Value,LMP$adj.P.Val)
+
+#Remove probes not associated to a gene
+nodeFile[nodeFile==""] <- NA
+nodeFile <- na.omit(nodeFile) #78
+
+# Making the gene name columns have only one name - first separating the connected gene list into separate columns in own data.frame:
+foo <- data.frame(do.call('rbind', strsplit(as.character(nodeFile$altName),';',fixed=TRUE)))
+nodeFile$altName <- foo$X1
+nodeFile<- nodeFile[ order(nodeFile$altName), ]
+
+##Isolate hubs TNK2 and LGR5
+rownames(nodeFile)<-nodeFile$nodeName
+Both<-subset(nodeFile,nodeFile$altName=="TNK2"|nodeFile$altName=="LGR6")
+DarkMagenta_Hubs_Dat<-DarkMagentaDat_t[which(rownames(DarkMagentaDat_t) %in% rownames(Both)),]
+
+mvalues =DarkMagenta_Hubs_Dat
+D = dist(t(mvalues))
+clust = hclust(D,method="complete")
+plot(as.phylo(clust), lab4ut="axial", type = "unrooted", no.margin = TRUE, edge.width=2,cex=0.6,tip.col=v.grp.col)
+legend("bottomright",c("Term","PreT","LOPE","IUGR","EOPE"),fill=c("black","darkred","blue","chocolate","lightseagreen"))
+
+##Clustering on Brown Module top Hubs meeting FDR and DB
+##Loading in brown NodeFile to get the cg sites that we need
+######
+nodeFile = read.table("CytoscapeInput-nodes-brown.txt", sep="\t", header = TRUE)
+load('ttbeta_all_RobinsonLabCohort.RData')
+load('tt_EOPEvsPreT_RobinsonCohort.RData')
+# Adding delta beta value column and p-value from linear regression column
+probes=nodeFile$nodeName
+rownames(ttbeta_all)##I took the delta betas from my linear model when doing differential DNAm of single CpG sites
+fdat <- ttbeta_all
+fdatp <- fdat[rownames(fdat) %in% probes,] #17185
+fdatp <- fdatp[ order(row.names(fdatp)), ]
+nodeFile<- nodeFile[ order(nodeFile$nodeName), ]
+nodeFile <- cbind(nodeFile, fdatp$PreTvsEOPE)
+
+##Getting associated p-values
+LMP <- tt_EOPEvsPreT[rownames(tt_EOPEvsPreT) %in% probes,]##17179
+LMP <- LMP[ order(row.names(LMP)), ]
+nodeFile <- cbind(nodeFile, LMP$P.Value)
+
+#Remove probes not associated to a gene
+nodeFile[nodeFile==""] <- NA
+nodeFile <- na.omit(nodeFile) #12166
+
+# Making the gene name columns have only one name - first separating the connected gene list into separate columns in own data.frame:
+foo <- data.frame(do.call('rbind', strsplit(as.character(nodeFile$altName),';',fixed=TRUE)))
+nodeFile$altName <- foo$X1
+colnames(nodeFile)[1:5] <- c("nodeName","Gene","nodeAttribute", "DeltaBeta", "PValue")
+rownames(nodeFile)<-nodeFile$nodeName
+
+##Hubs that met nominal p-val<0.000012 and DB>0.1
+NodeFile<-subset(nodeFile,DeltaBeta>abs(0.1) & PValue<0.000012)
+NodeFile <- NodeFile[ order(NodeFile$Gene), ]
+Keep<-c("cg21823502","cg27177709","cg11327657","cg22981158","cg23997887","cg22927134","cg14938029","cg09174601","cg25503410","cg00453717","cg17233452","cg26450254","cg07835293","cg08869883","cg24143196","cg15003812","cg02766770","cg23196346","cg16275903")
+
+###Cluster on hubs that meet PVal
+BrownDat_P<-BrownDat_t[which(rownames(BrownDat_t) %in% Keep),]##19
+
+mvalues =BrownDat_P
+D = dist(t(mvalues))
+clust = hclust(D,method="complete")
+plot(as.phylo(clust), lab4ut="axial", type = "unrooted", no.margin = TRUE, edge.width=2,cex=0.6,tip.col=v.grp.col)
+legend("bottomright",c("Term","PreT","LOPE","IUGR","EOPE"),fill=c("black","darkred","blue","chocolate","lightseagreen"))
+
+##Cluster on hubs of Both magenta and brown
+Keep<-c("cg21823502","cg27177709","cg11327657","cg22981158","cg23997887","cg22927134","cg14938029","cg09174601","cg25503410","cg00453717","cg17233452","cg26450254","cg07835293","cg08869883","cg24143196","cg15003812","cg02766770","cg23196346","cg16275903","cg10843210","cg20163796")
+
+datMeth_t<-t(datMeth)
+Dat_P<-datMeth_t[which(rownames(datMeth_t) %in% Keep),]##21
+
+mvalues =Dat_P
+D = dist(t(mvalues))
+clust = hclust(D,method="complete")
+plot(as.phylo(clust), lab4ut="axial", type = "unrooted", no.margin = TRUE, edge.width=2,cex=0.6,tip.col=v.grp.col)
+legend("bottomright",c("Term","PreT","LOPE","IUGR","EOPE"),fill=c("black","darkred","blue","chocolate","lightseagreen"))
+```
+
