@@ -6,4 +6,4 @@ Citation: *Langfelder, Peter, and Steve Horvath. "WGCNA: an R package for weight
 
 This analysis reduces dimensions in the data to create modules and looks at the gene ontology of DNAm assocaited with each module. 
 
-There are some good resources on this analysis online. Particularly this youtube video (https://www.youtube.com/watch?v=A7xoX3-7ZtY) is Steve Horvath explaining the method and it's uses. 
+There are some good resources on this analysis online. Particularly this youtube video (https://www.youtube.com/watch?v=A7xoX3-7ZtY) is Steve Horvath explaining the method and its uses. 
