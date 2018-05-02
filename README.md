@@ -24,9 +24,7 @@ Variability in placental TL is associated with alterations in DNAm at TERT, DNMT
 
 **Placental-PE-IUGR-Project**
 
-Under Review at Human Molecular Genetics as of August 2017
-
-Current Citation: *Wilson, SL., Leavey, K., Cox, B., Robinson, WP. The value of DNA methylation profiling in characterizing preeclampsia and intrauterine growth restriction. bioRxiv (2017): 151290.*
+Citation: *Wilson, Samantha L., et al. "Mining DNA methylation alterations towards a classification of placental pathologies." Human molecular genetics 27.1 (2017): 135-146.*
 
 **Abstract**
 
